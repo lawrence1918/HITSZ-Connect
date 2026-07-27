@@ -20,6 +20,12 @@
 # Go workspace file
 go.work
 .idea/
+.DS_Store
+
+# SwiftPM build products and local macOS application staging directories.
+macos/.build/
+macos/.swiftpm/
+dist/.app-staging/
 
 # Config file
 config.toml
@@ -41,3 +47,7 @@ aTrust*.txt
 
 # Per-session Shadowrocket output generated from the authenticated resource list.
 Shadowrocket-hitsz-connect-*.conf
+
+# Encrypted HITSZ Connect profiles are machine-bound credentials. They live
+# outside the repository by default, under ~/Documents/hitsz-connect/.
+*.hcenc

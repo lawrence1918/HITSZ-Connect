@@ -17,8 +17,11 @@ import (
 )
 
 var CommitID string
+var appBridge bool
+var secureConfigID string
+var listSecureConfigs bool
 
-const hitszConnectVersion = "1.2.0-hitsz.1"
+const hitszConnectVersion = "1.3.0-hitsz.1"
 
 func getTOMLVal[T int | uint64 | string | bool](valPointer *T, defaultVal T) T {
 	if valPointer == nil {
@@ -274,8 +277,38 @@ func init() {
 	flag.BoolVar(&atrustAuthInfo, "auth-info", false, "Fetch aTrust authentication information, but not login")
 	flag.BoolVar(&atrustTrustDevice, "trust-device", false, "Trust the current device for aTrust with client data, but not connect")
 	flag.BoolVar(&atrustUntrustDevice, "untrust-device", false, "Untrust the current device for aTrust with client data, but not connect")
+	flag.BoolVar(&appBridge, "app-bridge", false, "Read app commands from stdin and emit newline-delimited JSON events on stdout")
+	flag.StringVar(&secureConfigID, "secure-config", "", "Load encrypted connection UUID from ~/Documents/hitsz-connect")
+	flag.BoolVar(&listSecureConfigs, "list-secure-configs", false, "List encrypted connections in ~/Documents/hitsz-connect")
 
 	flag.Parse()
+	if appBridge {
+		// The app supplies the complete runtime configuration over stdin. Do not
+		// validate defaults or inspect secret-bearing command-line arguments.
+		flag.Visit(func(f *flag.Flag) {
+			if f.Name != "app-bridge" {
+				fmt.Fprintf(os.Stderr, "HITSZ Connect: -app-bridge does not accept -%s; send configuration over stdin\n", f.Name)
+				os.Exit(2)
+			}
+		})
+		return
+	}
+	if secureConfigID != "" || listSecureConfigs {
+		if secureConfigID != "" && listSecureConfigs {
+			fmt.Fprintln(os.Stderr, "HITSZ Connect: use either -secure-config or -list-secure-configs")
+			os.Exit(2)
+		}
+		// A secure profile supplies its runtime values after this flag phase.
+		// Rejecting other flags makes it impossible to accidentally put a secret
+		// back into argv while using the encrypted profile workflow.
+		flag.Visit(func(f *flag.Flag) {
+			if f.Name != "secure-config" && f.Name != "list-secure-configs" {
+				fmt.Fprintf(os.Stderr, "HITSZ Connect: -secure-config does not accept -%s; edit the encrypted profile in HITSZ Connect.app\n", f.Name)
+				os.Exit(2)
+			}
+		})
+		return
+	}
 
 	// A config file supplies defaults; values explicitly supplied on the CLI
 	// take precedence. The old behavior silently discarded all CLI values.

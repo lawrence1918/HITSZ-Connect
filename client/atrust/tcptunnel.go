@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/mythologyli/zju-connect/client"
+	"github.com/mythologyli/zju-connect/internal/metrics"
 	"github.com/mythologyli/zju-connect/log"
 	"github.com/mythologyli/zju-connect/resolve"
 )
@@ -160,6 +161,7 @@ func (c *tcpTunnelConn) Read(b []byte) (int, error) {
 			}
 			log.DebugPrint("Received application data, length:", length)
 			log.DebugDumpHex(data)
+			metrics.AddATrustRX(len(data))
 
 			n := copy(b, data)
 			if n < len(data) {
@@ -224,6 +226,9 @@ func (c *tcpTunnelConn) Write(b []byte) (int, error) {
 	frame.Write(b)
 	_, err := c.tlsConn.Write(frame.Bytes())
 	log.DebugDumpHex(frame.Bytes())
+	if err == nil {
+		metrics.AddATrustTX(length)
+	}
 
 	return length, err
 }

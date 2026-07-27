@@ -245,6 +245,15 @@ func (s *Session) hitszCompleteMFA(origin, service string, opts HITSZSSOLogin, p
 			return "", fmt.Errorf("generate HITSZ OTP code: %w", err)
 		}
 	}
+	if code == "" && method.name != hitszMFAOTP {
+		if provider := currentHITSZMFACodeProvider(); provider != nil {
+			code, err = provider(method.name)
+			if err != nil {
+				return "", fmt.Errorf("read HITSZ %s MFA code: %w", method.name, err)
+			}
+			code = strings.TrimSpace(code)
+		}
+	}
 	if code == "" {
 		if opts.NonInteractive {
 			return "", errors.New("HITSZ MFA code required in non-interactive mode")

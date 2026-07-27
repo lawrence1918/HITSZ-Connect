@@ -3,6 +3,8 @@ package atrust
 import (
 	"io"
 	"sync"
+
+	"github.com/mythologyli/zju-connect/internal/metrics"
 )
 
 type L3Conn struct {
@@ -22,6 +24,7 @@ func (c *L3Conn) Read(p []byte) (n int, err error) {
 		return 0, io.EOF
 	}
 	n = copy(p, data)
+	metrics.AddATrustRX(len(data))
 	return
 }
 
@@ -31,6 +34,9 @@ func (c *L3Conn) Write(p []byte) (n int, err error) {
 	defer c.sendLock.Unlock()
 	n = len(p)
 	err = c.l3Tunnel.processIPV4(p)
+	if err == nil {
+		metrics.AddATrustTX(n)
+	}
 	return n, err
 }
 

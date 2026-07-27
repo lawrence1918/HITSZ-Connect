@@ -60,7 +60,7 @@ func Fatalf(format string, v ...any) {
 }
 
 func DumpHex(buf []byte) {
-	stdoutDumper := hex.Dumper(os.Stdout)
+	stdoutDumper := hex.Dumper(log.Writer())
 	defer func(stdoutDumper io.WriteCloser) {
 		_ = stdoutDumper.Close()
 	}(stdoutDumper)
@@ -69,7 +69,7 @@ func DumpHex(buf []byte) {
 
 func DebugDumpHex(buf []byte) {
 	if debug {
-		stdoutDumper := hex.Dumper(os.Stdout)
+		stdoutDumper := hex.Dumper(log.Writer())
 		defer func(stdoutDumper io.WriteCloser) {
 			_ = stdoutDumper.Close()
 		}(stdoutDumper)
@@ -78,5 +78,5 @@ func DebugDumpHex(buf []byte) {
 }
 
 func NewLogger(prefix string) *log.Logger {
-	return log.New(os.Stdout, prefix, log.LstdFlags)
+	return log.New(log.Writer(), prefix, log.LstdFlags)
 }
