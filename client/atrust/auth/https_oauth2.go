@@ -124,8 +124,7 @@ func (s *Session) httpsOauth2(callback string) error {
 		return err
 	}
 
-	body, _ := io.ReadAll(resp.Body)
-	log.DebugPrintf("Received httpsOauth2 data: %s", string(body))
+	log.DebugPrintf("Received httpsOauth2 response (redacted)")
 
 	s.ticket = ticket
 	return nil

@@ -26,6 +26,24 @@ debug_dump = false
 bind_interface = ""
 auto_detect_interface = false
 
+# HITSZ/aTrust profile (Shadowrocket coexistence)
+# profile = "hitsz"
+# mfa_method = "app" # "app", "sms", or "otp"; empty prefers app
+# mfa_code = ""
+# mfa_otp_secret = "" # Base32 secret or otpauth:// URI; keep the config file mode 0600
+# mfa_otp_secret_file = "" # safer alternative: one secret in a regular 0600 file
+# non_interactive = false
+# remember_sso = true
+# remember_mfa = true
+# no_system_dns_mutation = true
+# dns_relay_bind = "127.0.0.1:53535"
+# hitsz_dns_server = "10.248.98.30"
+# shadowrocket = "connect" # "off", "open", or "connect"
+# shadowrocket_update_subs = false
+# shadowrocket_add_node_file = ""
+# shadowrocket_disconnect_on_exit = false
+# shadowrocket_config_fragment = ""
+
 # Port forwarding
 port_forwarding = [
 #    { network_type = "tcp", bind_address = "127.0.0.1:9898", remote_address = "10.10.98.98:80" },

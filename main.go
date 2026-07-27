@@ -1,5 +1,3 @@
-//go:build !tun
-
 package main
 
 import (
@@ -19,6 +17,7 @@ import (
 	easyconnectclient "github.com/mythologyli/zju-connect/client/easyconnect"
 	"github.com/mythologyli/zju-connect/configs"
 	"github.com/mythologyli/zju-connect/dial"
+	"github.com/mythologyli/zju-connect/integration/shadowrocket"
 	"github.com/mythologyli/zju-connect/internal/hook_func"
 	"github.com/mythologyli/zju-connect/log"
 	"github.com/mythologyli/zju-connect/resolve"
@@ -37,9 +36,9 @@ func main() {
 	log.Init()
 
 	if CommitID != "" {
-		log.Println("Start ZJU Connect v" + zjuConnectVersion + "-" + CommitID)
+		log.Println("Start HITSZ Connect v" + hitszConnectVersion + "-" + CommitID)
 	} else {
-		log.Println("Start ZJU Connect v" + zjuConnectVersion)
+		log.Println("Start HITSZ Connect v" + hitszConnectVersion)
 	}
 	if conf.DebugDump {
 		log.EnableDebug()
@@ -126,6 +125,13 @@ func main() {
 			conf.GraphCodeFile,
 			conf.CasTicket,
 			conf.OAuth2Code,
+			conf.MFAMethod,
+			conf.MFACode,
+			conf.MFAOTPSecret,
+			conf.MFAOTPSecretFile,
+			conf.NonInteractive,
+			conf.RememberSSO,
+			conf.RememberMFA,
 			clientData,
 			resourceData,
 			conf.UpdateBestNodesInterval,
@@ -137,7 +143,7 @@ func main() {
 		}
 
 		if conf.ClientDataFile != "" {
-			err = os.WriteFile(conf.ClientDataFile, clientData, 0644)
+			err = os.WriteFile(conf.ClientDataFile, clientData, 0600)
 			if err != nil {
 				log.Fatalf("Write client data file error: %s", err)
 			}
@@ -301,10 +307,56 @@ func main() {
 
 	go vpnStack.Run()
 
-	if conf.Protocol == "atrust" {
-		conf.ProxyAll = false
-	}
+	// In the HITSZ profile the SOCKS endpoint is the data-plane bridge for
+	// Shadowrocket. Bind it before invoking Shadowrocket's connect URL so the
+	// packet tunnel can never race a not-yet-listening local proxy.
 	vpnDialer := dial.NewDialer(vpnStack, vpnResolver, ipResources, conf.ProxyAll, conf.DialDirectProxy)
+	if conf.SocksBind != "" {
+		if err := service.ServeSocks5(conf.SocksBind, vpnDialer, vpnResolver, conf.SocksUser, conf.SocksPasswd); err != nil {
+			log.Fatalf("SOCKS5 server setup error: %s", err)
+		}
+	}
+
+	// The HITSZ relay is intentionally independent of the legacy resolver:
+	// Shadowrocket sends only *.hitsz.edu.cn here, and every accepted request
+	// is forwarded through aTrust rather than the macOS resolver.
+	if conf.Profile == "hitsz" && conf.DNSRelayBind != "" {
+		relay, relayErr := service.StartHITSZDNSRelay(conf.DNSRelayBind, conf.HITSZDNSServer, vpnStack)
+		if relayErr != nil {
+			log.Fatalf("HITSZ DNS relay setup error: %s", relayErr)
+		}
+		hook_func.RegisterTerminalFunc("CloseHITSZDNSRelay", func(ctx context.Context) error {
+			return relay.Close()
+		})
+	}
+
+	if conf.ShadowrocketConfigFragment != "" {
+		fragment := shadowrocket.ConfigFragment(conf.DNSRelayBind)
+		if conf.Profile == "hitsz" {
+			prefixes := shadowrocket.HITSZResourceCIDRs(ipResources)
+			domains := make([]string, 0, len(domainResources)+1)
+			domains = append(domains, "hitsz.edu.cn")
+			for domain := range domainResources {
+				domains = append(domains, domain)
+			}
+			fragment = shadowrocket.HITSZConfigFragment(conf.DNSRelayBind, conf.SocksBind, prefixes, domains)
+		}
+		if err := os.WriteFile(conf.ShadowrocketConfigFragment, []byte(fragment), 0600); err != nil {
+			log.Fatalf("Write Shadowrocket config fragment error: %s", err)
+		}
+		log.Printf("Shadowrocket config fragment saved to %s", conf.ShadowrocketConfigFragment)
+	}
+	if conf.Shadowrocket != "off" || conf.ShadowrocketAddNodeFile != "" || conf.ShadowrocketUpdateSubs {
+		controller := shadowrocket.New()
+		if err := controller.Apply(context.Background(), conf.Shadowrocket, conf.ShadowrocketAddNodeFile, conf.ShadowrocketUpdateSubs); err != nil {
+			log.Fatalf("Shadowrocket integration error: %s", err)
+		}
+		if conf.ShadowrocketDisconnectOnExit && conf.Shadowrocket == "connect" {
+			hook_func.RegisterTerminalFunc("DisconnectShadowrocket", func(ctx context.Context) error {
+				return controller.Disconnect(ctx)
+			})
+		}
+	}
 
 	if conf.DNSServerBind != "" {
 		go service.ServeDNS(conf.DNSServerBind, localResolver)
@@ -312,10 +364,6 @@ func main() {
 	if conf.TUNMode {
 		clientIP, _ := vpnClient.IP()
 		go service.ServeDNS(clientIP.String()+":53", localResolver)
-	}
-
-	if conf.SocksBind != "" {
-		go service.ServeSocks5(conf.SocksBind, vpnDialer, vpnResolver, conf.SocksUser, conf.SocksPasswd)
 	}
 
 	if conf.HTTPBind != "" {
@@ -360,12 +408,12 @@ func main() {
 		signal.Notify(quit, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 		<-quit
 	}
-	log.Println("Shutdown ZJU-Connect ......")
+	log.Println("Shutdown HITSZ Connect ......")
 	if errs := hook_func.ExecTerminalFunc(context.Background()); errs != nil {
 		for _, err := range errs {
-			log.Printf("Shutdown ZJU-Connect failed: %s", err)
+			log.Printf("Shutdown HITSZ Connect failed: %s", err)
 		}
 	} else {
-		log.Println("Shutdown ZJU-Connect success, Bye~")
+		log.Println("Shutdown HITSZ Connect success, Bye~")
 	}
 }

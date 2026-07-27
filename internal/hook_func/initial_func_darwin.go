@@ -66,6 +66,9 @@ func SetDNSServerWithHook(service, dns string) error {
 
 func init() {
 	RegisterInitialFunc("clean resolver file", func(ctx context.Context, config configs.Config) error {
+		if config.Profile == "hitsz" || config.NoSystemDNSMutation {
+			return nil
+		}
 		// discard error
 		_ = os.Remove("/etc/resolver/zju.edu.cn")
 		_ = os.Remove("/etc/resolver/cc98.org")
@@ -83,7 +86,7 @@ func init() {
 	})
 	//RegisterInitialFunc("check bind port", checkBindPortLegal) // TODO: figure out whether to check port or not
 	RegisterInitialFunc("set dns server", func(ctx context.Context, config configs.Config) error {
-		if !config.TUNMode || !config.DNSHijack {
+		if config.Profile == "hitsz" || config.NoSystemDNSMutation || !config.TUNMode || !config.DNSHijack {
 			return nil
 		}
 		services, err := ListNetworkServices()

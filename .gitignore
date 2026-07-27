@@ -23,3 +23,21 @@ go.work
 
 # Config file
 config.toml
+
+# HITSZ/aTrust runtime credentials and raw diagnostic captures. Keep only
+# redacted documentation and synthetic test fixtures in the repository.
+hitsz-client-data.json
+*-client-data.json
+client_data*.json
+otpsecret
+*.otpsecret
+*.otp-secret
+*.otp
+*.har
+*.pcap
+*.pcapng
+atrust*.txt
+aTrust*.txt
+
+# Per-session Shadowrocket output generated from the authenticated resource list.
+Shadowrocket-hitsz-connect-*.conf

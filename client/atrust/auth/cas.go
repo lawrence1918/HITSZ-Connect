@@ -74,7 +74,7 @@ func validateCASCallbackURL(callbackURL *url.URL, baseHost string) error {
 	if callbackURL.Scheme != "https" {
 		return fmt.Errorf("invalid callback url: scheme not https")
 	}
-	if callbackURL.Host != baseHost {
+	if !sameHTTPSHost(callbackURL.Host, baseHost) {
 		return fmt.Errorf("invalid callback url: host not match")
 	}
 	if callbackURL.Path != "/passport/v1/auth/cas" {
@@ -91,7 +91,7 @@ func (s *Session) cas(callback string) error {
 	log.Println("Perform GET /passport/v1/auth/cas")
 
 	req, _ := http.NewRequest("GET", callback, nil)
-	req.Header.Set("User-Agent", UserAgent)
+	req.Header.Set("User-Agent", s.requestUserAgent())
 	req.Header.Set("x-csrf-token", s.csrfToken)
 	req.Header.Set("x-sdp-traceid", s.randSdpId())
 

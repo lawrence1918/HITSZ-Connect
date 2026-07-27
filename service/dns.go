@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync"
 
 	"github.com/miekg/dns"
 	"github.com/mythologyli/zju-connect/internal/hook_func"
@@ -61,6 +62,8 @@ func (d DNSServer) handleSingleDNSResolve(ctx context.Context, requestMsg *dns.M
 						if err == nil {
 							resMsg.Answer = append(resMsg.Answer, rr)
 						}
+					} else {
+						resMsg.Rcode = dns.RcodeServerFailure
 					}
 				}
 			case dns.TypeAAAA:
@@ -70,6 +73,8 @@ func (d DNSServer) handleSingleDNSResolve(ctx context.Context, requestMsg *dns.M
 						if err == nil {
 							resMsg.Answer = append(resMsg.Answer, rr)
 						}
+					} else {
+						resMsg.Rcode = dns.RcodeServerFailure
 					}
 				}
 			}
@@ -79,7 +84,7 @@ func (d DNSServer) handleSingleDNSResolve(ctx context.Context, requestMsg *dns.M
 }
 
 func NewDnsServer(resolver *resolve.Resolver, dnsServers []string) DNSServer {
-	netIPs := make([]net.IP, len(dnsServers))
+	netIPs := make([]net.IP, 0, len(dnsServers))
 	for _, dnsServer := range dnsServers {
 		if net.ParseIP(dnsServer) != nil {
 			netIPs = append(netIPs, net.ParseIP(dnsServer))
@@ -88,24 +93,68 @@ func NewDnsServer(resolver *resolve.Resolver, dnsServers []string) DNSServer {
 	return DNSServer{resolver: resolver, localDNS: netIPs}
 }
 
-func ServeDNS(bindAddr string, dnsServer DNSServer) {
-	dns.HandleFunc(".", dnsServer.serveDNSRequest)
+type DNSHandle struct {
+	udp  *dns.Server
+	tcp  *dns.Server
+	once sync.Once
+}
 
-	server := &dns.Server{Addr: bindAddr, Net: "udp"}
-	log.Printf("Starting DNS server at %s", server.Addr)
+func StartDNS(bindAddr string, dnsServer DNSServer) (*DNSHandle, error) {
+	udpConn, err := net.ListenPacket("udp", bindAddr)
+	if err != nil {
+		return nil, err
+	}
+	tcpListener, err := net.Listen("tcp", bindAddr)
+	if err != nil {
+		_ = udpConn.Close()
+		return nil, err
+	}
+	handler := dns.HandlerFunc(dnsServer.serveDNSRequest)
+	handle := &DNSHandle{
+		udp: &dns.Server{PacketConn: udpConn, Handler: handler},
+		tcp: &dns.Server{Listener: tcpListener, Handler: handler},
+	}
+	go func() {
+		if err := handle.udp.ActivateAndServe(); err != nil {
+			log.Printf("DNS UDP server stopped: %v", err)
+		}
+	}()
+	go func() {
+		if err := handle.tcp.ActivateAndServe(); err != nil {
+			log.Printf("DNS TCP server stopped: %v", err)
+		}
+	}()
+	log.Printf("Starting DNS server at %s (UDP/TCP)", bindAddr)
+	return handle, nil
+}
+
+func (h *DNSHandle) Close() error {
+	var closeErr error
+	h.once.Do(func() {
+		if h.udp != nil {
+			closeErr = h.udp.Shutdown()
+		}
+		if h.tcp != nil {
+			if err := h.tcp.Shutdown(); closeErr == nil {
+				closeErr = err
+			}
+		}
+	})
+	return closeErr
+}
+
+func ServeDNS(bindAddr string, dnsServer DNSServer) {
+	handle, err := StartDNS(bindAddr, dnsServer)
+	if err != nil {
+		log.Println("DNS server listen failed: " + err.Error())
+		return
+	}
 
 	hook_func.RegisterTerminalFunc("CloseDNSListener", func(ctx context.Context) error {
 		log.Println("Closing DNS listener...")
-		if err := server.Shutdown(); err != nil {
+		if err := handle.Close(); err != nil {
 			return fmt.Errorf("close DNS listener failed: %w", err)
 		}
 		return nil
 	})
-
-	err := server.ListenAndServe()
-	if err != nil {
-		log.Println("DNS server listen failed: " + err.Error())
-	} else {
-		log.Println("DNS server closed")
-	}
 }

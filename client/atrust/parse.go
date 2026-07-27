@@ -191,7 +191,12 @@ func (c *Client) parseResource(resource []byte) error {
 					}
 
 					if isDomain {
-						c.domainResources[strings.ReplaceAll(hostStr, "*", "")] = client.DomainResource{
+						domain := normalizeDomainResourceHost(hostStr)
+						if domain == "" {
+							log.DebugPrintf("invalid domain resource: %q", hostStr)
+							continue
+						}
+						c.domainResources[domain] = client.DomainResource{
 							PortMin:     portMin,
 							PortMax:     portMax,
 							Protocol:    address.Protocol,
@@ -199,7 +204,7 @@ func (c *Client) parseResource(resource []byte) error {
 							NodeGroupID: appItem.NodeGroupID,
 						}
 
-						log.DebugPrintf("Add domain: %s, Port range: %d ~ %d, [%s]", hostStr, portMin, portMax, address.Protocol)
+						log.DebugPrintf("Add domain: %s, Port range: %d ~ %d, [%s]", domain, portMin, portMax, address.Protocol)
 					}
 
 					// Handle DNS rules
@@ -214,7 +219,7 @@ func (c *Client) parseResource(resource []byte) error {
 							if ip != nil {
 								if ip.To4() != nil {
 									ipSetBuilder.Add(netaddr.MustParseIP(ip.String()))
-									c.dnsResource[hostStr] = ip
+									c.dnsResource[normalizeDomainResourceHost(hostStr)] = ip
 									log.DebugPrintf("Add DNS rule: %s -> %s", hostStr, ipStr)
 
 									break // TODO: handle multiple IPs for the same domain
@@ -273,4 +278,15 @@ func (c *Client) parseResource(resource []byte) error {
 	c.ipSet, _ = ipSetBuilder.IPSet()
 
 	return nil
+}
+
+// normalizeDomainResourceHost makes server-supplied wildcard resources and
+// queried host names use the same key. aTrust commonly returns
+// "*.example.edu.cn"; retaining the leading dot makes a later suffix match
+// accidentally look for "..example.edu.cn".
+func normalizeDomainResourceHost(host string) string {
+	host = strings.TrimSpace(strings.ToLower(host))
+	host = strings.TrimSuffix(host, ".")
+	host = strings.TrimPrefix(host, "*.")
+	return strings.TrimPrefix(host, ".")
 }

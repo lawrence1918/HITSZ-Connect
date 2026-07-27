@@ -13,7 +13,10 @@ import (
 	"github.com/things-go/go-socks5"
 )
 
-func ServeSocks5(bindAddr string, dialer *dial.Dialer, resolver *resolve.Resolver, user string, password string) {
+// ServeSocks5 binds synchronously and then serves in the background. This
+// lets callers safely hand the loopback proxy address to another application
+// (notably Shadowrocket) only after it is ready to accept connections.
+func ServeSocks5(bindAddr string, dialer *dial.Dialer, resolver *resolve.Resolver, user string, password string) error {
 	var authMethods []socks5.Authenticator
 	if user != "" && password != "" {
 		authMethods = append(authMethods, socks5.UserPassAuthenticator{
@@ -33,12 +36,11 @@ func ServeSocks5(bindAddr string, dialer *dial.Dialer, resolver *resolve.Resolve
 		socks5.WithLogger(socks5.NewLogger(log.NewLogger("[SOCKS5] "))),
 	)
 
-	log.Printf("SOCKS5 server listening on %s", bindAddr)
-
 	listener, err := net.Listen("tcp", bindAddr)
 	if err != nil {
-		panic("SOCKS5 listen failed: " + err.Error())
+		return fmt.Errorf("SOCKS5 listen failed: %w", err)
 	}
+	log.Printf("SOCKS5 server listening on %s", bindAddr)
 
 	hook_func.RegisterTerminalFunc("CloseSocks5Listener", func(ctx context.Context) error {
 		log.Println("Closing SOCKS5 listener...")
@@ -48,11 +50,14 @@ func ServeSocks5(bindAddr string, dialer *dial.Dialer, resolver *resolve.Resolve
 		return nil
 	})
 
-	if err = server.Serve(listener); err != nil {
-		if errors.Is(err, net.ErrClosed) {
-			log.Println("SOCKS5 server closed")
-		} else {
-			log.Println("SOCKS5 listen failed: " + err.Error())
+	go func() {
+		if err = server.Serve(listener); err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				log.Println("SOCKS5 server closed")
+			} else {
+				log.Println("SOCKS5 listen failed: " + err.Error())
+			}
 		}
-	}
+	}()
+	return nil
 }

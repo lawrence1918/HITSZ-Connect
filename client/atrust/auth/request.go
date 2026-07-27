@@ -17,7 +17,7 @@ import (
 func (s *Session) authConfig(mod, needTicket bool) (int, []AuthInfo, error) {
 	log.Println("Perform GET /passport/v1/public/authConfig")
 
-	params := WithSharedParams(nil)
+	params := s.requestParams(nil)
 	if mod {
 		params.Set("mod", "1")
 	}
@@ -27,7 +27,7 @@ func (s *Session) authConfig(mod, needTicket bool) (int, []AuthInfo, error) {
 
 	u := s.baseURL + "/passport/v1/public/authConfig"
 	req, _ := http.NewRequest("GET", u+"?"+params.Encode(), nil)
-	req.Header.Set("User-Agent", UserAgent)
+	req.Header.Set("User-Agent", s.requestUserAgent())
 	req.Header.Set("x-csrf-token", s.csrfToken)
 	req.Header.Set("x-sdp-rid", s.rid)
 	req.Header.Set("x-sdp-traceid", s.randSdpId())
@@ -41,7 +41,7 @@ func (s *Session) authConfig(mod, needTicket bool) (int, []AuthInfo, error) {
 		_ = Body.Close()
 	}(resp.Body)
 	body, _ := io.ReadAll(resp.Body)
-	log.DebugPrintf("Received auth config: %s", string(body))
+	log.DebugPrintf("Received auth config response (redacted)")
 
 	var re struct {
 		Data struct {
@@ -60,7 +60,7 @@ func (s *Session) authConfig(mod, needTicket bool) (int, []AuthInfo, error) {
 	if err != nil {
 		return 0, nil, err
 	}
-	log.DebugPrintf("Parsed auth config: %+v", re)
+	log.DebugPrintf("Parsed auth config: isLogin=%d, auth methods=%d", re.Data.IsLogin, len(re.Data.AuthServerInfoList))
 
 	s.csrfToken = re.Data.CSRF
 	if s.csrfToken == "" {
@@ -69,8 +69,23 @@ func (s *Session) authConfig(mod, needTicket bool) (int, []AuthInfo, error) {
 	s.pubKey = re.Data.PubKey
 	s.pubKeyExp = re.Data.PubKeyExp
 	s.antiReplayRand = re.Data.AntiReplayRand
-
 	return re.Data.IsLogin, re.Data.AuthServerInfoList, nil
+}
+
+// hitszPostCAS matches HITSZ's browser flow after the CAS callback:
+// refresh ticket-bearing authConfig, then use browser-shaped legacy reportEnv
+// before authCheck. reportEnvBeforeLogin is an official local-client API at
+// localhost.sangfor.com.cn, not a remote aTrust endpoint; this standalone
+// client deliberately does not forward its sensitive payload to the gateway.
+// The browser ignores reportEnv failures, so authCheck must still run.
+func (s *Session) hitszPostCAS() error {
+	if _, _, err := s.authConfig(true, true); err != nil {
+		return fmt.Errorf("refresh HITSZ post-CAS auth config: %w", err)
+	}
+	if err := s.reportEnv(); err != nil {
+		log.Printf("Warning: HITSZ legacy reportEnv failed; continuing to authCheck: %v", err)
+	}
+	return nil
 }
 
 func (s *Session) reportEnv() error {
@@ -95,9 +110,9 @@ func (s *Session) reportEnv() error {
 		},
 	}
 	body, _ := json.Marshal(payload)
-	log.DebugPrintf("Sending report env: %s", string(body))
-	req, _ := http.NewRequest("POST", u+"?"+WithSharedParams(nil).Encode(), bytes.NewReader(body))
-	req.Header.Set("User-Agent", UserAgent)
+	log.DebugPrintf("Sending report environment request (ticket redacted)")
+	req, _ := http.NewRequest("POST", u+"?"+s.requestParams(nil).Encode(), bytes.NewReader(body))
+	req.Header.Set("User-Agent", s.requestUserAgent())
 	req.Header.Set("Content-Type", "application/json;charset=utf-8")
 	req.Header.Set("x-csrf-token", s.csrfToken)
 	req.Header.Set("x-sdp-traceid", s.randSdpId())
@@ -110,7 +125,7 @@ func (s *Session) reportEnv() error {
 		_ = Body.Close()
 	}(resp.Body)
 	body, _ = io.ReadAll(resp.Body)
-	log.DebugPrintf("Received report env: %s", string(body))
+	log.DebugPrintf("Received report environment response (redacted)")
 
 	var re struct {
 		Code int `json:"code"`
@@ -123,7 +138,7 @@ func (s *Session) reportEnv() error {
 	log.DebugPrintf("Parsed report env: %+v", re)
 
 	if re.Code != 0 {
-		log.Printf("reportEnv failed with code %d: %s", re.Code, string(body))
+		log.Printf("reportEnv failed with code %d", re.Code)
 		return fmt.Errorf("reportEnv failed with code %d", re.Code)
 	}
 
@@ -197,8 +212,8 @@ func (s *Session) authCheck() (authStep, error) {
 	log.Println("Perform GET /passport/v1/auth/authCheck")
 
 	u := s.baseURL + "/passport/v1/auth/authCheck"
-	req, _ := http.NewRequest("GET", u+"?"+WithSharedParams(nil).Encode(), nil)
-	req.Header.Set("User-Agent", UserAgent)
+	req, _ := http.NewRequest("GET", u+"?"+s.requestParams(nil).Encode(), nil)
+	req.Header.Set("User-Agent", s.requestUserAgent())
 	req.Header.Set("x-csrf-token", s.csrfToken)
 	req.Header.Set("x-sdp-traceid", s.randSdpId())
 
@@ -210,7 +225,7 @@ func (s *Session) authCheck() (authStep, error) {
 		_ = Body.Close()
 	}(resp.Body)
 	body, _ := io.ReadAll(resp.Body)
-	log.DebugPrintf("Received auth check: %s", string(body))
+	log.DebugPrintf("Received auth check response (redacted)")
 
 	var ac struct {
 		Code    int          `json:"code"`
@@ -234,12 +249,12 @@ func (s *Session) phoneNumber(authID string) ([]string, error) {
 	log.Println("Perform GET /passport/v1/public/phoneNumber")
 
 	u := s.baseURL + "/passport/v1/public/phoneNumber"
-	params := WithSharedParams(nil)
+	params := s.requestParams(nil)
 	if authID != "" {
 		params.Set("authId", authID)
 	}
 	req, _ := http.NewRequest("GET", u+"?"+params.Encode(), nil)
-	req.Header.Set("User-Agent", UserAgent)
+	req.Header.Set("User-Agent", s.requestUserAgent())
 	req.Header.Set("x-csrf-token", s.csrfToken)
 	req.Header.Set("x-sdp-traceid", s.randSdpId())
 
@@ -304,7 +319,7 @@ func parsePhoneNumbers(raw json.RawMessage) ([]string, error) {
 func (s *Session) authSms(step authStep) error {
 	log.Println("Perform GET /passport/v1/auth/sms")
 	u := s.baseURL + "/passport/v1/auth/sms"
-	params := WithSharedParams(url.Values{
+	params := s.requestParams(url.Values{
 		"action": {"sendsms"},
 	})
 	switch step.SMSMode {
@@ -321,7 +336,7 @@ func (s *Session) authSms(step authStep) error {
 		return fmt.Errorf("unknown SMS authentication mode")
 	}
 	req, _ := http.NewRequest("GET", u+"?"+params.Encode(), nil)
-	req.Header.Set("User-Agent", UserAgent)
+	req.Header.Set("User-Agent", s.requestUserAgent())
 	req.Header.Set("x-csrf-token", s.csrfToken)
 	req.Header.Set("x-sdp-traceid", s.randSdpId())
 
@@ -375,7 +390,7 @@ func (s *Session) smsCheckCode(step authStep) (authStep, error) {
 
 func (s *Session) secondarySMSCheckCodeImpl(step authStep, code string, skipSecondaryAuth bool) (authStep, error) {
 	u := s.baseURL + "/passport/v1/auth/sms"
-	params := WithSharedParams(url.Values{
+	params := s.requestParams(url.Values{
 		"action": {"checkcode"},
 	})
 
@@ -410,7 +425,7 @@ func (s *Session) secondarySMSCheckCodeImpl(step authStep, code string, skipSeco
 	default:
 		return authStep{}, fmt.Errorf("unknown SMS authentication mode")
 	}
-	req.Header.Set("User-Agent", UserAgent)
+	req.Header.Set("User-Agent", s.requestUserAgent())
 	req.Header.Set("x-csrf-token", s.csrfToken)
 	req.Header.Set("x-sdp-traceid", s.randSdpId())
 
@@ -447,8 +462,8 @@ func (s *Session) onlineInfo() (string, error) {
 	log.Println("Perform GET /passport/v1/user/onlineInfo")
 
 	u := s.baseURL + "/passport/v1/user/onlineInfo"
-	req, _ := http.NewRequest("GET", u+"?"+WithSharedParams(nil).Encode(), nil)
-	req.Header.Set("User-Agent", UserAgent)
+	req, _ := http.NewRequest("GET", u+"?"+s.requestParams(nil).Encode(), nil)
+	req.Header.Set("User-Agent", s.requestUserAgent())
 	req.Header.Set("x-csrf-token", s.csrfToken)
 	req.Header.Set("x-sdp-traceid", s.randSdpId())
 
@@ -499,8 +514,8 @@ func (s *Session) ClientResource() ([]byte, error) {
 		},
 	}
 	bdy, _ := json.Marshal(payload)
-	req, _ := http.NewRequest("POST", u+"?"+WithSharedParams(nil).Encode(), bytes.NewReader(bdy))
-	req.Header.Set("User-Agent", UserAgent)
+	req, _ := http.NewRequest("POST", u+"?"+s.requestParams(nil).Encode(), bytes.NewReader(bdy))
+	req.Header.Set("User-Agent", s.requestUserAgent())
 	req.Header.Set("Content-Type", "application/json;charset=utf-8")
 	req.Header.Set("x-csrf-token", s.csrfToken)
 	req.Header.Set("x-sdp-traceid", s.randSdpId())
@@ -522,11 +537,11 @@ func (s *Session) checkCode() ([]byte, error) {
 	log.Println("Perform GET /passport/v1/public/checkCode")
 
 	u := s.baseURL + "/passport/v1/public/checkCode"
-	params := WithSharedParams(url.Values{
+	params := s.requestParams(url.Values{
 		"rnd": {strconv.FormatInt(time.Now().UnixMilli(), 10)},
 	})
 	req, _ := http.NewRequest("GET", u+"?"+params.Encode(), nil)
-	req.Header.Set("User-Agent", UserAgent)
+	req.Header.Set("User-Agent", s.requestUserAgent())
 	req.Header.Set("Accept", "image/webp,image/apng,image/*,*/*;q=0.8")
 
 	resp, err := s.client.Do(req)
@@ -551,7 +566,7 @@ func parsePortalTicketFromRedirect(redirectLocation, baseHost string) (string, e
 	if redirectURL.Scheme != "https" {
 		return "", fmt.Errorf("invalid redirect url: scheme not https")
 	}
-	if redirectURL.Host != baseHost {
+	if !sameHTTPSHost(redirectURL.Host, baseHost) {
 		return "", fmt.Errorf("invalid redirect url: host not match")
 	}
 	if redirectURL.Path != "/portal/shortcut.html" {

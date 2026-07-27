@@ -30,9 +30,22 @@ var sharedParams = url.Values{
 	"lang":       {"en-US"},
 }
 
+// hitszBrowserParams deliberately describes the browser integration that
+// HITSZ exposes for its aTrust tenant.  It must remain separate from
+// sharedParams: existing aTrust gateways expect the desktop-client identity.
+var hitszBrowserParams = url.Values{
+	"clientType": {"SDPBrowserClient"},
+	"platform":   {"Mac"},
+	"lang":       {"zh-CN"},
+}
+
 func WithSharedParams(extra url.Values) url.Values {
-	combined := make(url.Values, len(sharedParams)+len(extra))
-	for k, v := range sharedParams {
+	return withBaseParams(sharedParams, extra)
+}
+
+func withBaseParams(base, extra url.Values) url.Values {
+	combined := make(url.Values, len(base)+len(extra))
+	for k, v := range base {
 		combined[k] = append([]string(nil), v...)
 	}
 
@@ -46,11 +59,36 @@ func WithSharedParams(extra url.Values) url.Values {
 	return combined
 }
 
+// requestParams and requestUserAgent only change wire identity for an
+// explicitly selected HITSZ SSO login.  All historical login methods retain
+// the legacy aTrust client parameters and user agent.
+func (s *Session) requestParams(extra url.Values) url.Values {
+	if s != nil && s.hitszBrowserMode {
+		return withBaseParams(hitszBrowserParams, extra)
+	}
+	return WithSharedParams(extra)
+}
+
+func (s *Session) requestUserAgent() string {
+	if s != nil && s.hitszBrowserMode {
+		return hitszSSOUserAgent
+	}
+	return UserAgent
+}
+
 type Cookie struct {
-	Host   string `json:"host"`
-	Scheme string `json:"scheme"`
-	Name   string `json:"name"`
-	Value  string `json:"value"`
+	Host       string        `json:"host"`
+	Scheme     string        `json:"scheme"`
+	Name       string        `json:"name"`
+	Value      string        `json:"value"`
+	Path       string        `json:"path,omitempty"`
+	Domain     string        `json:"domain,omitempty"`
+	Expires    time.Time     `json:"expires,omitempty"`
+	RawExpires string        `json:"raw_expires,omitempty"`
+	MaxAge     int           `json:"max_age,omitempty"`
+	Secure     bool          `json:"secure,omitempty"`
+	HttpOnly   bool          `json:"http_only,omitempty"`
+	SameSite   http.SameSite `json:"same_site,omitempty"`
 }
 
 type ClientAuthData struct {
@@ -73,7 +111,15 @@ type Session struct {
 	antiReplayRand string
 	ticket         string
 
-	response map[string]json.RawMessage
+	// HITSZ uses browser-shaped headers and query parameters for aTrust HTTP
+	// requests. This is transient session state and is never persisted.
+	hitszBrowserMode bool
+
+	response   map[string]json.RawMessage
+	cookieURLs map[string]*url.URL
+	// hitszRedirectTrace stores only redacted scheme/host/path values from the
+	// final HITSZ MFA redirect chain. It is intentionally never persisted.
+	hitszRedirectTrace []string
 }
 
 func NewSession(server string, dialContext ...func(context.Context, string, string) (net.Conn, error)) *Session {
@@ -88,13 +134,46 @@ func NewSession(server string, dialContext ...func(context.Context, string, stri
 
 	rid := base64.StdEncoding.EncodeToString([]byte(server))
 
+	baseURL := &url.URL{Host: server, Scheme: "https"}
 	return &Session{
-		client:   client,
-		baseHost: server,
-		baseURL:  "https://" + server,
-		rid:      rid,
-		response: make(map[string]json.RawMessage),
+		client:     client,
+		baseHost:   server,
+		baseURL:    "https://" + server,
+		rid:        rid,
+		response:   make(map[string]json.RawMessage),
+		cookieURLs: map[string]*url.URL{"https://" + server: baseURL},
 	}
+}
+
+// enableTLSVerification upgrades this session from the legacy aTrust TLS
+// behavior to normal certificate verification.  NewSession intentionally
+// keeps its historical permissive default for existing gateways, but HITSZ
+// authentication sends primary credentials to a public IdP and must not reuse
+// an insecure TLS connection.
+func (s *Session) enableTLSVerification() {
+	if s == nil || s.client == nil {
+		return
+	}
+	transport, ok := s.client.Transport.(*http.Transport)
+	if !ok || transport == nil {
+		// A nil or custom RoundTripper is already outside NewSession's legacy
+		// insecure transport.  Do not replace it here because callers may have
+		// supplied a transport with custom root CAs or proxy behavior.
+		return
+	}
+
+	config := transport.TLSClientConfig
+	if config == nil {
+		config = &tls.Config{}
+	} else {
+		config = config.Clone()
+	}
+	config.InsecureSkipVerify = false
+	transport.TLSClientConfig = config
+	// A Session can be reused after GetAuthInfoList.  Closing idle connections
+	// ensures the HITSZ flow cannot continue over a connection established when
+	// certificate verification was disabled.
+	transport.CloseIdleConnections()
 }
 
 type AuthInfo struct {
@@ -259,16 +338,32 @@ func (s *Session) completeSMS(step authStep) (authStep, error) {
 }
 
 func (s *Session) Login(method LoginMethod, opts LoginOptions) (LoginResult, error) {
+	isHITSZ := false
+	switch method.(type) {
+	case HITSZSSOLogin, *HITSZSSOLogin:
+		isHITSZ = true
+		// This is deliberately before authConfig: it covers the initial aTrust
+		// request, the CAS callback, and every IdP request made by this Session.
+		s.enableTLSVerification()
+	}
+	// A Session may be reused.  Do not let a former HITSZ browser identity
+	// bleed into a later legacy aTrust login.
+	s.hitszBrowserMode = isHITSZ
+
 	sid := ""
 	if len(opts.Cookies) > 0 {
 		for _, cookie := range opts.Cookies {
+			s.rememberCookieURL(&url.URL{Host: cookie.Host, Scheme: cookie.Scheme})
 			if cookie.Host == s.baseHost && cookie.Scheme == "https" && cookie.Name == "sid" {
 				sid = cookie.Value
 			}
 
 			c := &http.Cookie{
-				Name:  cookie.Name,
-				Value: cookie.Value,
+				Name: cookie.Name, Value: cookie.Value, Path: cookie.Path,
+				Domain: cookie.Domain, Expires: cookie.Expires,
+				RawExpires: cookie.RawExpires, MaxAge: cookie.MaxAge,
+				Secure: cookie.Secure, HttpOnly: cookie.HttpOnly,
+				SameSite: cookie.SameSite,
 			}
 			s.client.Jar.SetCookies(&url.URL{Host: cookie.Host, Scheme: cookie.Scheme}, []*http.Cookie{c})
 		}
@@ -312,7 +407,11 @@ func (s *Session) Login(method LoginMethod, opts LoginOptions) (LoginResult, err
 		return LoginResult{}, err
 	}
 
-	err = s.reportEnv()
+	if isHITSZ {
+		err = s.hitszPostCAS()
+	} else {
+		err = s.reportEnv()
+	}
 	if err != nil {
 		return LoginResult{}, err
 	}
@@ -328,17 +427,24 @@ func (s *Session) Login(method LoginMethod, opts LoginOptions) (LoginResult, err
 	}
 
 	cookies := make([]Cookie, 0)
-	for _, cookie := range s.client.Jar.Cookies(&url.URL{Host: s.baseHost, Scheme: "https"}) {
-		if cookie.Name == "sid" {
-			sid = cookie.Value
+	seenCookies := map[string]bool{}
+	for _, cookieURL := range s.cookieURLs {
+		for _, cookie := range s.client.Jar.Cookies(cookieURL) {
+			if cookieURL.Host == s.baseHost && cookie.Name == "sid" {
+				sid = cookie.Value
+			}
+			key := cookieURL.Scheme + "://" + cookieURL.Host + "/" + cookie.Name + "/" + cookie.Path
+			if seenCookies[key] {
+				continue
+			}
+			seenCookies[key] = true
+			cookies = append(cookies, Cookie{
+				Host: cookieURL.Host, Scheme: cookieURL.Scheme, Name: cookie.Name, Value: cookie.Value,
+				Path: cookie.Path, Domain: cookie.Domain, Expires: cookie.Expires,
+				RawExpires: cookie.RawExpires, MaxAge: cookie.MaxAge, Secure: cookie.Secure,
+				HttpOnly: cookie.HttpOnly, SameSite: cookie.SameSite,
+			})
 		}
-
-		cookies = append(cookies, Cookie{
-			Host:   s.baseHost,
-			Scheme: "https",
-			Name:   cookie.Name,
-			Value:  cookie.Value,
-		})
 	}
 
 	return LoginResult{
@@ -346,4 +452,36 @@ func (s *Session) Login(method LoginMethod, opts LoginOptions) (LoginResult, err
 		SID:      sid,
 		Cookies:  cookies,
 	}, nil
+}
+
+func (s *Session) rememberCookieURL(u *url.URL) {
+	if u == nil || u.Host == "" || u.Scheme == "" {
+		return
+	}
+	if s.cookieURLs == nil {
+		s.cookieURLs = make(map[string]*url.URL)
+	}
+	key := u.Scheme + "://" + u.Host
+	s.cookieURLs[key] = &url.URL{Scheme: u.Scheme, Host: u.Host}
+}
+
+// sameHTTPSHost treats an omitted HTTPS port and :443 as the same authority.
+// HITSZ's IdP includes :443 in the CAS service parameter but its final
+// redirect often omits it.
+func sameHTTPSHost(left, right string) bool {
+	leftURL, leftErr := url.Parse("https://" + left)
+	rightURL, rightErr := url.Parse("https://" + right)
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
+	leftHost := strings.TrimSuffix(strings.ToLower(leftURL.Hostname()), ".")
+	rightHost := strings.TrimSuffix(strings.ToLower(rightURL.Hostname()), ".")
+	leftPort, rightPort := leftURL.Port(), rightURL.Port()
+	if leftPort == "" {
+		leftPort = "443"
+	}
+	if rightPort == "" {
+		rightPort = "443"
+	}
+	return leftHost == rightHost && leftPort == rightPort
 }

@@ -18,7 +18,7 @@ import (
 
 var CommitID string
 
-const zjuConnectVersion = "1.2.0"
+const hitszConnectVersion = "1.2.0-hitsz.1"
 
 func getTOMLVal[T int | uint64 | string | bool](valPointer *T, defaultVal T) T {
 	if valPointer == nil {
@@ -71,6 +71,22 @@ func parseTOMLConfig(configFile string, conf *configs.Config) error {
 	conf.GraphCodeFile = getTOMLVal(confTOML.GraphCodeFile, "")
 	conf.BindInterface = getTOMLVal(confTOML.BindInterface, "")
 	conf.AutoDetectInterface = getTOMLVal(confTOML.AutoDetectInterface, false)
+	conf.Profile = getTOMLVal(confTOML.Profile, "")
+	conf.NoSystemDNSMutation = getTOMLVal(confTOML.NoSystemDNSMutation, false)
+	conf.MFAMethod = getTOMLVal(confTOML.MFAMethod, "")
+	conf.MFACode = getTOMLVal(confTOML.MFACode, "")
+	conf.MFAOTPSecret = getTOMLVal(confTOML.MFAOTPSecret, "")
+	conf.MFAOTPSecretFile = getTOMLVal(confTOML.MFAOTPSecretFile, "")
+	conf.NonInteractive = getTOMLVal(confTOML.NonInteractive, false)
+	conf.RememberSSO = getTOMLVal(confTOML.RememberSSO, true)
+	conf.RememberMFA = getTOMLVal(confTOML.RememberMFA, true)
+	conf.DNSRelayBind = getTOMLVal(confTOML.DNSRelayBind, "")
+	conf.HITSZDNSServer = getTOMLVal(confTOML.HITSZDNSServer, "10.248.98.30")
+	conf.Shadowrocket = getTOMLVal(confTOML.Shadowrocket, "off")
+	conf.ShadowrocketUpdateSubs = getTOMLVal(confTOML.ShadowrocketUpdateSubs, false)
+	conf.ShadowrocketAddNodeFile = getTOMLVal(confTOML.ShadowrocketAddNodeFile, "")
+	conf.ShadowrocketDisconnectOnExit = getTOMLVal(confTOML.ShadowrocketDisconnectOnExit, false)
+	conf.ShadowrocketConfigFragment = getTOMLVal(confTOML.ShadowrocketConfigFragment, "")
 	conf.AuthType = getTOMLVal(confTOML.AuthType, "")
 	conf.Phone = getTOMLVal(confTOML.Phone, "")
 	conf.LoginDomain = getTOMLVal(confTOML.LoginDomain, "Radius")
@@ -132,6 +148,52 @@ func parseTOMLConfig(configFile string, conf *configs.Config) error {
 	return nil
 }
 
+// applyProfile only fills profile-owned defaults. Explicit non-default values
+// remain available for campuses that deploy the same aTrust flow differently.
+func applyProfile(conf *configs.Config) error {
+	switch conf.Profile {
+	case "", "default":
+		return nil
+	case "hitsz":
+		conf.Protocol = "atrust"
+		if conf.ServerAddress == "" || conf.ServerAddress == "rvpn.zju.edu.cn" || conf.ServerAddress == "vpn.zju.edu.cn" {
+			conf.ServerAddress = "trust.hitsz.edu.cn"
+		}
+		if conf.LoginDomain == "" || conf.LoginDomain == "Radius" {
+			conf.LoginDomain = "hitcas"
+		}
+		if conf.AuthType == "" {
+			conf.AuthType = "auth/hitsz-sso"
+		}
+		if conf.DNSRelayBind == "" {
+			conf.DNSRelayBind = "127.0.0.1:53535"
+		}
+		if conf.HITSZDNSServer == "" {
+			conf.HITSZDNSServer = "10.248.98.30"
+		}
+		// The HITSZ SOCKS/HTTP endpoints are consumed by the local
+		// Shadowrocket packet tunnel. They must not be exposed to the LAN.
+		if conf.SocksBind == ":1080" {
+			conf.SocksBind = "127.0.0.1:1080"
+		}
+		if conf.HTTPBind == ":1081" {
+			conf.HTTPBind = "127.0.0.1:1081"
+		}
+		// Shadowrocket only sends server-issued HITSZ rules to this local
+		// proxy. Fail closed for anything outside that ACL: a direct fallback
+		// would be captured by Shadowrocket again and can form a proxy loop.
+		conf.ProxyAll = true
+		// aTrust's legacy fake-IP and global DNS hooks conflict with packet
+		// tunnel clients such as Shadowrocket.
+		conf.FakeIP = false
+		conf.DNSHijack = false
+		conf.NoSystemDNSMutation = true
+		return nil
+	default:
+		return fmt.Errorf("HITSZ Connect: unsupported profile %q", conf.Profile)
+	}
+}
+
 func init() {
 	configFile, tcpPortForwarding, udpPortForwarding, customDns, customProxyDomain := "", "", "", "", ""
 	showVersion := false
@@ -174,8 +236,24 @@ func init() {
 	flag.StringVar(&conf.GraphCodeFile, "graph-code-file", "", "Graph Check Code File")
 	flag.StringVar(&conf.BindInterface, "bind-interface", "", "Bind VPN underlay connections to this network interface (takes precedence over auto detection)")
 	flag.BoolVar(&conf.AutoDetectInterface, "auto-detect-interface", false, "Automatically detect and bind the VPN underlay interface")
+	flag.StringVar(&conf.Profile, "profile", "", "Configuration profile (hitsz)")
+	flag.BoolVar(&conf.NoSystemDNSMutation, "no-system-dns-mutation", false, "Never change macOS system DNS settings")
+	flag.StringVar(&conf.MFAMethod, "mfa-method", "", "HITSZ MFA method: app, sms, or otp")
+	flag.StringVar(&conf.MFACode, "mfa-code", "", "HITSZ MFA verification code (prompt if omitted)")
+	flag.StringVar(&conf.MFAOTPSecret, "mfa-otp-secret", "", "HITSZ OTP/TOTP Base32 secret or otpauth:// URI (not recommended on command line; never persisted)")
+	flag.StringVar(&conf.MFAOTPSecretFile, "mfa-otp-secret-file", "", "File containing one HITSZ OTP/TOTP secret (must not be group/world-readable)")
+	flag.BoolVar(&conf.NonInteractive, "non-interactive", false, "Fail instead of prompting for HITSZ MFA input")
+	flag.BoolVar(&conf.RememberSSO, "remember-sso", true, "Remember HITSZ unified-authentication session")
+	flag.BoolVar(&conf.RememberMFA, "remember-mfa", true, "Request temporary HITSZ MFA remember state")
+	flag.StringVar(&conf.DNSRelayBind, "dns-relay-bind", "", "HITSZ DNS relay bind address (default 127.0.0.1:53535 for hitsz profile)")
+	flag.StringVar(&conf.HITSZDNSServer, "hitsz-dns-server", "10.248.98.30", "HITSZ DNS server used by the relay")
+	flag.StringVar(&conf.Shadowrocket, "shadowrocket", "off", "Shadowrocket action: off, open, or connect")
+	flag.BoolVar(&conf.ShadowrocketUpdateSubs, "shadowrocket-update-subs", false, "Ask Shadowrocket to update subscriptions")
+	flag.StringVar(&conf.ShadowrocketAddNodeFile, "shadowrocket-add-node-file", "", "File containing one anytls:// node URI to import into Shadowrocket")
+	flag.BoolVar(&conf.ShadowrocketDisconnectOnExit, "shadowrocket-disconnect-on-exit", false, "Disconnect Shadowrocket when zju-connect exits")
+	flag.StringVar(&conf.ShadowrocketConfigFragment, "shadowrocket-config-fragment", "", "Write a compatible Shadowrocket config fragment to this file")
 	flag.StringVar(&conf.TwfID, "twf-id", "", "Login using twfID captured (mostly for debug usage)")
-	flag.StringVar(&conf.AuthType, "auth-type", "", "aTrust authentication type (auth/psw, auth/cas, auth/httpsOauth2, auth/smsCheckCode)")
+	flag.StringVar(&conf.AuthType, "auth-type", "", "aTrust authentication type (auth/psw, auth/cas, auth/hitsz-sso, auth/httpsOauth2, auth/smsCheckCode)")
 	flag.StringVar(&conf.Phone, "phone", "", "Phone number with country code for aTrust SMS check code login (e.g. 852-114514)")
 	flag.StringVar(&conf.LoginDomain, "login-domain", "Radius", "aTrust login domain")
 	flag.StringVar(&conf.ClientDataFile, "client-data-file", "", "aTrust Client Data File")
@@ -199,8 +277,22 @@ func init() {
 
 	flag.Parse()
 
+	// A config file supplies defaults; values explicitly supplied on the CLI
+	// take precedence. The old behavior silently discarded all CLI values.
+	cliValues := map[string]string{}
+	flag.Visit(func(f *flag.Flag) { cliValues[f.Name] = f.Value.String() })
+	// Make profile-aware utility commands such as -auth-info work when the
+	// profile is supplied on the command line. Full config-file merging below
+	// applies the same defaults again for normal startup.
+	if conf.Profile != "" {
+		if err := applyProfile(&conf); err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+	}
+
 	if showVersion {
-		fmt.Printf("ZJU Connect v%s\n", zjuConnectVersion)
+		fmt.Printf("HITSZ Connect v%s\n", hitszConnectVersion)
 		os.Exit(0)
 	}
 
@@ -257,6 +349,11 @@ func init() {
 		if err != nil {
 			fmt.Println(err)
 			os.Exit(1)
+		}
+		for name, value := range cliValues {
+			if name != "config" {
+				_ = flag.Set(name, value)
+			}
 		}
 	} else {
 		if tcpPortForwarding != "" {
@@ -322,6 +419,11 @@ func init() {
 		}
 	}
 
+	if err := applyProfile(&conf); err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+
 	missing := conf.ServerAddress == ""
 	if !missing && conf.Protocol == "easyconnect" {
 		missing = (conf.Username == "" || conf.Password == "") && conf.TwfID == ""
@@ -332,6 +434,8 @@ func init() {
 			missing = conf.Username == "" || conf.Password == ""
 		case "auth/smsCheckCode":
 			missing = conf.Phone == ""
+		case "auth/hitsz-sso":
+			missing = conf.Username == "" || conf.Password == ""
 		}
 		if missing {
 			missing = conf.SID == "" || conf.DeviceID == "" || conf.ResourceFile == ""

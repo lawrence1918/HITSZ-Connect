@@ -173,7 +173,7 @@ func SetTrusted(serverAddress string, serverPort int, authData []byte, trusted b
 			return err
 		}
 	}
-	log.DebugPrintf("Given auth data: %+v", clientAuthData)
+	log.DebugPrintf("Loaded persisted aTrust auth state (cookies redacted)")
 
 	if clientAuthData.DeviceID == "" {
 		clientAuthData.DeviceID = strings.ToLower(randHex(32))
@@ -212,7 +212,7 @@ func SetTrusted(serverAddress string, serverPort int, authData []byte, trusted b
 	}
 }
 
-func (c *Client) Setup(serverAddress string, serverPort int, username, password, phone, loginDomain, authType, graphCodeFile, casTicket, oauth2Code string, authData, resourceData []byte, updateBestNodesInterval int, bindInterface string, autoDetectInterface bool) ([]byte, error) {
+func (c *Client) Setup(serverAddress string, serverPort int, username, password, phone, loginDomain, authType, graphCodeFile, casTicket, oauth2Code, mfaMethod, mfaCode, mfaOTPSecret, mfaOTPSecretFile string, nonInteractive, rememberSSO, rememberMFA bool, authData, resourceData []byte, updateBestNodesInterval int, bindInterface string, autoDetectInterface bool) ([]byte, error) {
 	c.serverAddress = serverAddress
 	serverHost := net.JoinHostPort(serverAddress, fmt.Sprint(serverPort))
 	c.underlayDialer = newUnderlayDialer(serverHost, bindInterface, autoDetectInterface)
@@ -240,7 +240,7 @@ func (c *Client) Setup(serverAddress string, serverPort int, username, password,
 				return nil, err
 			}
 		}
-		log.DebugPrintf("Given auth data: %+v", clientAuthData)
+		log.DebugPrintf("Loaded persisted aTrust auth state (cookies redacted)")
 
 		if clientAuthData.DeviceID == "" {
 			clientAuthData.DeviceID = strings.ToLower(randHex(32))
@@ -271,6 +271,12 @@ func (c *Client) Setup(serverAddress string, serverPort int, username, password,
 			loginMethod = auth.CASLogin{
 				Domain: loginDomain,
 				Ticket: casTicket,
+			}
+		case "auth/hitsz-sso":
+			loginMethod = auth.HITSZSSOLogin{
+				Username: username, Password: password, Domain: loginDomain,
+				MFAMethod: mfaMethod, MFACode: mfaCode, MFAOTPSecret: mfaOTPSecret, MFAOTPSecretFile: mfaOTPSecretFile,
+				NonInteractive: nonInteractive, RememberSSO: rememberSSO, RememberMFA: rememberMFA,
 			}
 		case "auth/httpsOauth2":
 			loginMethod = auth.HTTPSOauth2Login{
@@ -318,7 +324,7 @@ func (c *Client) Setup(serverAddress string, serverPort int, username, password,
 		return nil, err
 	}
 
-	log.DebugPrintf("SID: %s, DeviceID: %s, ConnectionID: %s, SignKey: %s", c.SID, c.DeviceID, c.ConnectionID, c.SignKey)
+	log.DebugPrintf("aTrust session initialized (SID, device ID and signing key redacted)")
 
 	c.BestNodes = getBestNodes(c.NodeGroups, c.underlayDialer.DialContext)
 

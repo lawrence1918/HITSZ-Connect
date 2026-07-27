@@ -79,8 +79,13 @@ func (d *Dialer) DialIPPort(ctx context.Context, network, ipAddr string) (net.Co
 		hostAddr += ":" + parts[len(parts)-1]
 	}
 
-	// If addr is IPv6, use direct connection
+	// aTrust currently supports only IPv4. A forced-VPN dialer is used as a
+	// fail-closed local proxy by the HITSZ profile, so it must not send an IPv6
+	// fallback back into Shadowrocket's packet tunnel.
 	if len(parts) > 2 {
+		if d.alwaysUseVPN {
+			return nil, ErrACLDenied
+		}
 		return d.dialDirectIP(ctx, network, ipAddr, hostAddr)
 	}
 
@@ -166,6 +171,9 @@ func (d *Dialer) DialIPPort(ctx context.Context, network, ipAddr string) (net.Co
 				Port: port,
 			})
 		} else {
+			if d.alwaysUseVPN {
+				return nil, ErrACLDenied
+			}
 			log.Printf("VPN only support TCP/UDP. Connection to %s will use direct connection", ipAddr)
 			return d.dialDirectIP(ctx, network, ipAddr, hostAddr)
 		}
@@ -175,8 +183,12 @@ func (d *Dialer) DialIPPort(ctx context.Context, network, ipAddr string) (net.Co
 }
 
 func (d *Dialer) Dial(ctx context.Context, network string, addr string) (net.Conn, error) {
-	// If addr is IPv6, use direct connection
+	// See the equivalent guard in DialIPPort: forced-VPN mode must not turn an
+	// unsupported IPv6 request into a Shadowrocket-recursive direct dial.
 	if strings.Count(addr, ":") > 1 {
+		if d.alwaysUseVPN {
+			return nil, ErrACLDenied
+		}
 		return d.dialDirectIP(ctx, network, addr, "")
 	}
 
@@ -189,6 +201,9 @@ func (d *Dialer) Dial(ctx context.Context, network string, addr string) (net.Con
 	if ip = net.ParseIP(host); ip == nil {
 		ctx, ip, err = d.resolver.Resolve(ctx, host)
 		if err != nil {
+			if d.alwaysUseVPN {
+				return nil, ErrACLDenied
+			}
 			return d.dialDirectHost(ctx, network, addr)
 		}
 

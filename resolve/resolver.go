@@ -55,18 +55,10 @@ func (r *Resolver) Resolve(ctx context.Context, host string) (resCtx context.Con
 			resCtx = context.WithValue(resCtx, ContextKeyResolveHost, host)
 		}
 	}()
-	var domainResourceFound = false
-	var domainResource client.DomainResource
-	if r.domainResources != nil {
-		for domain, resource := range r.domainResources {
-			if strings.HasSuffix(host, domain) {
-				domainResourceFound = true
-				domainResource = resource
-				ctx = context.WithValue(ctx, ContextKeyDomainResource, resource)
-				log.DebugPrintf("Domain resource found: %s", domain)
-				break
-			}
-		}
+	domainResource, matchedDomain, domainResourceFound := findDomainResource(host, r.domainResources)
+	if domainResourceFound {
+		ctx = context.WithValue(ctx, ContextKeyDomainResource, domainResource)
+		log.DebugPrintf("Domain resource found: %s", matchedDomain)
 	}
 
 	if cachedIP, found := r.getDNSCache(host); found {
@@ -75,7 +67,7 @@ func (r *Resolver) Resolve(ctx context.Context, host string) (resCtx context.Con
 	}
 
 	if r.dnsResource != nil {
-		if ip, found := r.dnsResource[host]; found {
+		if ip, found := r.dnsResource[normalizeDomainResourceHost(host)]; found {
 			log.Printf("%s -> %s", host, ip.String())
 			if domainResourceFound {
 				err := r.IPPool.SetIPDomain(ip, host, domainResource)
@@ -157,6 +149,37 @@ func (r *Resolver) Resolve(ctx context.Context, host string) (resCtx context.Con
 	}
 }
 
+// findDomainResource returns the longest matching suffix so an app-specific
+// resource such as portal.hitsz.edu.cn consistently takes precedence over a
+// campus-wide *.hitsz.edu.cn rule. The explicit dot boundary prevents
+// examplehitsz.edu.cn from matching hitsz.edu.cn.
+func findDomainResource(host string, resources map[string]client.DomainResource) (client.DomainResource, string, bool) {
+	normalizedHost := normalizeDomainResourceHost(host)
+	var best client.DomainResource
+	bestDomain := ""
+	for domain, resource := range resources {
+		normalizedDomain := normalizeDomainResourceHost(domain)
+		if normalizedDomain == "" {
+			continue
+		}
+		if normalizedHost != normalizedDomain && !strings.HasSuffix(normalizedHost, "."+normalizedDomain) {
+			continue
+		}
+		if len(normalizedDomain) > len(bestDomain) {
+			best = resource
+			bestDomain = normalizedDomain
+		}
+	}
+	return best, bestDomain, bestDomain != ""
+}
+
+func normalizeDomainResourceHost(host string) string {
+	host = strings.TrimSpace(strings.ToLower(host))
+	host = strings.TrimSuffix(host, ".")
+	host = strings.TrimPrefix(host, "*.")
+	return strings.TrimPrefix(host, ".")
+}
+
 func (r *Resolver) RemoteUDPResolver() (*net.Resolver, error) {
 	if r.remoteUDPResolver != nil {
 		return r.remoteUDPResolver, nil
@@ -201,7 +224,6 @@ func (r *Resolver) Close() {
 	})
 }
 
-
 func NewResolver(stack stack.Stack, remoteDNSServer, secondaryDNSServer string, ttl uint64, domainResources map[string]client.DomainResource, dnsResource map[string]net.IP, useRemoteDNS bool) *Resolver {
 	//domainSuffixTree := domainsuffixtrie.NewDomainSuffixTrie[bool]()
 	//for domain := range domainResource {
@@ -227,11 +249,11 @@ func NewResolver(stack stack.Stack, remoteDNSServer, secondaryDNSServer string, 
 				})
 			},
 		},
-		ttl:              ttl,
-		domainResources:  domainResources,
-		dnsResource:      dnsResource,
-		dnsCache:         cache.New(time.Duration(ttl)*time.Second, time.Duration(ttl)*2*time.Second),
-		useRemoteDNS: useRemoteDNS,
+		ttl:             ttl,
+		domainResources: domainResources,
+		dnsResource:     dnsResource,
+		dnsCache:        cache.New(time.Duration(ttl)*time.Second, time.Duration(ttl)*2*time.Second),
+		useRemoteDNS:    useRemoteDNS,
 	}
 
 	if secondaryDNSServer != "" {
