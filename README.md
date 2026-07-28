@@ -4,7 +4,7 @@ HITSZ Connect 是面向哈尔滨工业大学（深圳）aTrust 校园资源访�
 和命令行程序。它支持 HITSZ 统一认证、多因素认证、校内 DNS 中继，以及与 Shadowrocket 的安全
 分流协作。
 
-当前发布版本为 **HITSZ Connect 1.3.10**，内置 CLI 版本为 **1.3.10-hitsz.1**。
+当前发布版本为 **HITSZ Connect 1.3.11**，内置 CLI 版本为 **1.3.11-hitsz.1**。
 
 > 非校方官方客户端。本软件按现状提供，不保证可用性、连续性或对任何网络环境的兼容性；请自行评估
 > 风险并遵守学校网络与服务使用规定。
@@ -102,9 +102,11 @@ App 创建的加密配置也可由正式 CLI 直接使用。先列出 UUID、名
 ./dist/hitsz/hitsz-connect-darwin-arm64 -secure-config '<配置 UUID>'
 ```
 
-`-secure-config` 与 `-list-secure-configs` 必须单独使用，不能再附加用户名、密码或其它运行参数；
-请在 App 中编辑配置。连接成功后，更新的 aTrust `clientData` 会自动重新加密写回同一 `.hcenc`
-文件。此工作流依赖 macOS 钥匙串和 cgo；正式 macOS CLI 必须使用 `CGO_ENABLED=1` 构建。
+`-secure-config` 与 `-list-secure-configs` 默认必须单独使用，不能再附加用户名、密码或其它运行参数；
+请在 App 中编辑配置。唯一的运行时例外是 `-debug-dump`，它不会写回配置，也不会把凭据放入 argv，
+但会输出原始网络数据，仅可在本机短暂诊断，不能保存、同步或提交。连接成功后，更新的 aTrust
+`clientData` 会自动重新加密写回同一 `.hcenc` 文件。此工作流依赖 macOS 钥匙串和 cgo；正式 macOS
+CLI 必须使用 `CGO_ENABLED=1` 构建。
 
 ## 旧版明文 CLI（兼容模式）
 
@@ -136,7 +138,7 @@ xattr -rd com.apple.quarantine ./hitsz-connect-darwin-arm64
 
 使用 App 或短信 MFA 时，将 `-mfa-method` 改为 `app` 或 `sms`；程序会在终端提示输入动态码。
 
-这些参数保留用于上游兼容和调试，不是 1.3.10 的推荐凭据存储方式：`-password` 可能进入 shell
+这些参数保留用于上游兼容和调试，不是 1.3.11 的推荐凭据存储方式：`-password` 可能进入 shell
 历史和进程列表，`-mfa-otp-secret-file`、`-client-data-file`、`-config` 及生成的规则文件均为
 明文文件。必须使用时，应限制文件权限、退出后妥善处置，并避免把任何内容提交、同步或贴入问题
 报告。新安装优先使用 App 或 `-secure-config`。

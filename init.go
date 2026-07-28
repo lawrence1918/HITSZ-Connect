@@ -21,8 +21,9 @@ var CommitID string
 var appBridge bool
 var secureConfigID string
 var listSecureConfigs bool
+var secureConfigDebugDump bool
 
-const hitszConnectVersion = "1.3.10-hitsz.1"
+const hitszConnectVersion = "1.3.11-hitsz.1"
 
 func getTOMLVal[T int | uint64 | string | bool](valPointer *T, defaultVal T) T {
 	if valPointer == nil {
@@ -269,7 +270,15 @@ func init() {
 		// Rejecting other flags makes it impossible to accidentally put a secret
 		// back into argv while using the encrypted profile workflow.
 		flag.Visit(func(f *flag.Flag) {
-			if f.Name != "secure-config" && f.Name != "list-secure-configs" {
+			switch f.Name {
+			case "secure-config", "list-secure-configs":
+				return
+			case "debug-dump":
+				// This diagnostic-only switch does not add a secret to argv and
+				// is deliberately never written back into the encrypted profile.
+				secureConfigDebugDump = conf.DebugDump
+				return
+			default:
 				fmt.Fprintf(os.Stderr, "HITSZ Connect: -secure-config does not accept -%s; edit the encrypted profile in HITSZ Connect.app\n", f.Name)
 				os.Exit(2)
 			}

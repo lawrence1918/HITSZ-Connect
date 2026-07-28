@@ -75,6 +75,9 @@ func main() {
 		if err := loadSecureConfig(secureConfigID); err != nil {
 			log.Fatalf("Load encrypted connection: %s", err)
 		}
+		if secureConfigDebugDump {
+			conf.DebugDump = true
+		}
 	}
 	if appBridge {
 		// The standard logger and package-specific loggers must never share the
