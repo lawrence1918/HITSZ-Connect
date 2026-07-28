@@ -32,6 +32,12 @@ type Stack struct {
 const NICID tcpip.NICID = 1
 const MTU uint32 = 1400
 
+// L3Conn.Read delivers one complete IPv4 datagram per call. Its implementation
+// copies into the supplied slice and cannot report a short buffer, so using the
+// tunnel MTU here silently corrupts valid inbound packets that are larger than
+// 1400 bytes. This is particularly visible with Moonlight video frames.
+const maxIPv4PacketSize = 65535
+
 type Endpoint struct {
 	client client.Client
 
@@ -191,8 +197,8 @@ func (s *Stack) Run() {
 		panic(connErr)
 	}
 	// Read from VPN server and send to gVisor stack
+	buf := make([]byte, maxIPv4PacketSize)
 	for {
-		buf := make([]byte, MTU)
 		n, err := s.endpoint.l3Conn.Read(buf)
 		if err != nil {
 			if hook_func.IsTerminal() {
@@ -205,7 +211,7 @@ func (s *Stack) Run() {
 		log.DebugDumpHex(buf[:n])
 
 		packetBuffer := stack.NewPacketBuffer(stack.PacketBufferOptions{
-			Payload: buffer.MakeWithData(buf),
+			Payload: buffer.MakeWithData(buf[:n]),
 		})
 		s.endpoint.dispatcher.DeliverNetworkPacket(header.IPv4ProtocolNumber, packetBuffer)
 		packetBuffer.DecRef()
