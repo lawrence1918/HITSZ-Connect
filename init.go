@@ -23,7 +23,7 @@ var secureConfigID string
 var listSecureConfigs bool
 var secureConfigDebugDump bool
 
-const hitszConnectVersion = "1.3.11-hitsz.1"
+const hitszConnectVersion = "1.3.12-hitsz.1"
 
 func getTOMLVal[T int | uint64 | string | bool](valPointer *T, defaultVal T) T {
 	if valPointer == nil {

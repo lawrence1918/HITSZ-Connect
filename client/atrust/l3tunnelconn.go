@@ -56,6 +56,10 @@ type l3TunnelConn struct {
 	info         clientInfo
 	onVIP        func([]net.IP)
 	vipRequested uint32
+
+	// The server splits the raw inbound IPv4 byte stream into short frames;
+	// frame boundaries are not required to align with IP packet boundaries.
+	lengthDataBuf []byte
 }
 
 type authIP struct {
@@ -199,11 +203,18 @@ func (c *l3TunnelConn) readLoop() {
 		switch fr.cmd {
 		case cmdDataResp:
 			if fr.dataMode == "len" {
-				log.DebugPrintf("l3-tunnel recv data packet len=%d", len(fr.payload))
-				select {
-				case c.incoming <- fr.payload:
-				case <-c.closeCh:
-					return
+				packets, err := c.consumeLengthDataPayload(fr.payload)
+				if err != nil {
+					log.DebugPrintf("l3-tunnel reassemble length data failed: %v", err)
+					continue
+				}
+				log.DebugPrintf("l3-tunnel recv length data packets=%d frameLen=%d buffered=%d", len(packets), len(fr.payload), len(c.lengthDataBuf))
+				for _, pkt := range packets {
+					select {
+					case c.incoming <- pkt:
+					case <-c.closeCh:
+						return
+					}
 				}
 				continue
 			}
@@ -599,6 +610,40 @@ func parseDataPayload(payload []byte) ([][]byte, error) {
 		packets = append(packets, pkt)
 	}
 	return packets, nil
+}
+
+// consumeLengthDataPayload reassembles the length-prefixed response layout.
+// Its payload is an arbitrary chunk of an IPv4 byte stream, not necessarily a
+// single datagram nor a concatenation ending on a datagram boundary. Moonlight
+// video packets are commonly split by the server's 4096-byte frame limit.
+func (c *l3TunnelConn) consumeLengthDataPayload(payload []byte) ([][]byte, error) {
+	c.lengthDataBuf = append(c.lengthDataBuf, payload...)
+	packets := make([][]byte, 0, 1)
+
+	for {
+		if len(c.lengthDataBuf) < 20 {
+			return packets, nil
+		}
+		if c.lengthDataBuf[0]>>4 != 4 {
+			c.lengthDataBuf = nil
+			return nil, fmt.Errorf("length data stream does not begin with IPv4")
+		}
+
+		headerLen := int(c.lengthDataBuf[0]&0x0f) * 4
+		packetLen := int(binary.BigEndian.Uint16(c.lengthDataBuf[2:4]))
+		if headerLen < 20 || packetLen < headerLen {
+			c.lengthDataBuf = nil
+			return nil, fmt.Errorf("invalid IPv4 packet length %d", packetLen)
+		}
+		if len(c.lengthDataBuf) < packetLen {
+			return packets, nil
+		}
+
+		packet := make([]byte, packetLen)
+		copy(packet, c.lengthDataBuf[:packetLen])
+		packets = append(packets, packet)
+		c.lengthDataBuf = c.lengthDataBuf[packetLen:]
+	}
 }
 
 func readDataRespPayload(r *bufio.Reader) ([]byte, string, error) {

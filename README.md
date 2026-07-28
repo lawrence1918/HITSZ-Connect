@@ -4,7 +4,7 @@ HITSZ Connect 是面向哈尔滨工业大学（深圳）aTrust 校园资源访�
 和命令行程序。它支持 HITSZ 统一认证、多因素认证、校内 DNS 中继，以及与 Shadowrocket 的安全
 分流协作。
 
-当前发布版本为 **HITSZ Connect 1.3.11**，内置 CLI 版本为 **1.3.11-hitsz.1**。
+当前发布版本为 **HITSZ Connect 1.3.12**，内置 CLI 版本为 **1.3.12-hitsz.1**。
 
 > 非校方官方客户端。本软件按现状提供，不保证可用性、连续性或对任何网络环境的兼容性；请自行评估
 > 风险并遵守学校网络与服务使用规定。
@@ -20,6 +20,7 @@ HITSZ Connect 是面向哈尔滨工业大学（深圳）aTrust 校园资源访�
 - HITSZ App、短信和安全令牌 OTP 多因素认证；
 - 仅允许 HITSZ DNS 查询的本地 TCP/UDP relay；
 - 面向 Shadowrocket 的本地 SOCKS5 分流、动态规则片段和 fail-closed ACL；
+- 跨 aTrust 长度帧重组 IPv4 数据流，避免高码率 UDP 视频包在 4096 字节边界被截断；
 - 原生 SwiftUI App、每秒流量状态，以及由 AES-256-GCM 和 macOS 钥匙串保护的连接配置。
 
 HITSZ 是本 fork 的维护和实际验证重点。其他学校及上游通用功能仍保留在源码中，但请以
@@ -138,7 +139,7 @@ xattr -rd com.apple.quarantine ./hitsz-connect-darwin-arm64
 
 使用 App 或短信 MFA 时，将 `-mfa-method` 改为 `app` 或 `sms`；程序会在终端提示输入动态码。
 
-这些参数保留用于上游兼容和调试，不是 1.3.11 的推荐凭据存储方式：`-password` 可能进入 shell
+这些参数保留用于上游兼容和调试，不是 1.3.12 的推荐凭据存储方式：`-password` 可能进入 shell
 历史和进程列表，`-mfa-otp-secret-file`、`-client-data-file`、`-config` 及生成的规则文件均为
 明文文件。必须使用时，应限制文件权限、退出后妥善处置，并避免把任何内容提交、同步或贴入问题
 报告。新安装优先使用 App 或 `-secure-config`。
