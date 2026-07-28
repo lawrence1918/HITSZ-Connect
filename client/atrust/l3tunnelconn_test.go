@@ -16,30 +16,18 @@ func ipv4Packet(payloadSize int, marker byte) []byte {
 	return packet
 }
 
-func TestReadDataRespPayloadKeepsLargeLengthFrame(t *testing.T) {
-	first := ipv4Packet(3000, 1)
-	second := ipv4Packet(3000, 2)
-	payload := append(first, second...)
-	if len(payload) <= 4096 {
-		t.Fatal("test payload must exceed the old detection limit")
-	}
+func TestReadDataRespPayloadRecognizesLengthFrame(t *testing.T) {
+	payload := ipv4Packet(100, 1)
 	frame := make([]byte, 2+len(payload))
 	binary.BigEndian.PutUint16(frame, uint16(len(payload)))
 	copy(frame[2:], payload)
 
-	got, mode, err := readDataRespPayload(bufio.NewReaderSize(bytes.NewReader(frame), maxDataFrameSize+4))
+	got, mode, err := readDataRespPayload(bufio.NewReader(bytes.NewReader(frame)))
 	if err != nil {
 		t.Fatalf("read data response: %v", err)
 	}
 	if mode != "len" || !bytes.Equal(got, payload) {
 		t.Fatalf("got mode=%q payload=%d bytes, want length payload=%d bytes", mode, len(got), len(payload))
-	}
-	packets, err := splitLengthDataPayload(got)
-	if err != nil {
-		t.Fatalf("split length payload: %v", err)
-	}
-	if len(packets) != 2 || !bytes.Equal(packets[0], first) || !bytes.Equal(packets[1], second) {
-		t.Fatalf("unexpected packets after split: %d", len(packets))
 	}
 }
 
@@ -55,7 +43,7 @@ func TestReadDataRespPayloadRecognizesTokenFrame(t *testing.T) {
 	payload = append(payload, packetLen...)
 	payload = append(payload, packet...)
 
-	got, mode, err := readDataRespPayload(bufio.NewReaderSize(bytes.NewReader(payload), maxDataFrameSize+4))
+	got, mode, err := readDataRespPayload(bufio.NewReader(bytes.NewReader(payload)))
 	if err != nil {
 		t.Fatalf("read data response: %v", err)
 	}

@@ -1,15 +1,15 @@
 # HITSZ Connect CLI 交付目录
 
-本目录包含 **HITSZ Connect CLI 1.3.9-hitsz.1** 的 Apple Silicon
+本目录包含 **HITSZ Connect CLI 1.3.10-hitsz.1** 的 Apple Silicon
 (`darwin/arm64`) 构建，以及不含凭据的 Shadowrocket 配置。推荐 macOS 13+ 用户优先使用同仓库的
-[HITSZ Connect.app](<../macos/HITSZ Connect.app>)；App 1.3.9 内置与本版本配套的 CLI，并用加密配置
+[HITSZ Connect.app](<../macos/HITSZ Connect.app>)；App 1.3.10 内置与本版本配套的 CLI，并用加密配置
 代替命令行明文凭据。
 
 ## 内容
 
 | 路径 | 用途 |
 | --- | --- |
-| `hitsz-connect-darwin-arm64` | HITSZ Connect CLI 1.3.9-hitsz.1，Apple Silicon 可执行文件。 |
+| `hitsz-connect-darwin-arm64` | HITSZ Connect CLI 1.3.10-hitsz.1，Apple Silicon 可执行文件。 |
 | `shadowrocket/Shadowrocket-HITSZ-DNS-relay-fragment.conf` | **推荐**导入/合并的基础 DNS 配置。 |
 | `legacy/Shadowrocket-aTrust-HITSZ.conf` | 仅供官方 aTrust 客户端旧方案回溯的完整配置。 |
 | `README-hitsz-connect.txt` | 随 CLI 发布的简短运行说明。 |
