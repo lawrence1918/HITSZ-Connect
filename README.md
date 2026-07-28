@@ -4,7 +4,7 @@ HITSZ Connect 是面向哈尔滨工业大学（深圳）aTrust 校园资源访�
 和命令行程序。它支持 HITSZ 统一认证、多因素认证、校内 DNS 中继，以及与 Shadowrocket 的安全
 分流协作。
 
-当前发布版本为 **HITSZ Connect 1.3.0**，内置 CLI 版本为 **1.3.0-hitsz.1**。
+当前发布版本为 **HITSZ Connect 1.3.1**，内置 CLI 版本为 **1.3.1-hitsz.1**。
 
 > 非校方官方客户端。本软件按现状提供，不保证可用性、连续性或对任何网络环境的兼容性；请自行评估
 > 风险并遵守学校网络与服务使用规定。
@@ -40,6 +40,9 @@ HITSZ 是本 fork 的维护和实际验证重点。其他学校及上游通用�
   接管其它域名的 DNS。
 - Shadowrocket 的动态规则会将服务器下发的资源域名，以及已确认的 `10.248.*`、`10.249.*`、
   `10.250.*` 校园资源转发至本地 SOCKS。未获 aTrust ACL 授权的目标会被拒绝，不会回落为直连。
+- App 发起连接时会先用 `scutil --nc stop` 静默暂停已有 Shadowrocket，强制 aTrust 认证使用自动检测
+  的物理出口；本地 SOCKS、HTTP 和 DNS relay 就绪后再用 `scutil --nc start` 静默恢复或连接。
+  这个流程不会打开或置前 Shadowrocket 窗口。
 - 普通外网流量仍由你在 Shadowrocket 中选定的节点和 `FINAL,PROXY` 规则处理。
 
 ## 支持范围
@@ -133,14 +136,15 @@ xattr -rd com.apple.quarantine ./hitsz-connect-darwin-arm64
 
 使用 App 或短信 MFA 时，将 `-mfa-method` 改为 `app` 或 `sms`；程序会在终端提示输入动态码。
 
-这些参数保留用于上游兼容和调试，不是 1.3.0 的推荐凭据存储方式：`-password` 可能进入 shell
+这些参数保留用于上游兼容和调试，不是 1.3.1 的推荐凭据存储方式：`-password` 可能进入 shell
 历史和进程列表，`-mfa-otp-secret-file`、`-client-data-file`、`-config` 及生成的规则文件均为
 明文文件。必须使用时，应限制文件权限、退出后妥善处置，并避免把任何内容提交、同步或贴入问题
 报告。新安装优先使用 App 或 `-secure-config`。
 
 ## Shadowrocket 分流原则
 
-- 程序可以唤起或连接 Shadowrocket，但不会替你导入或激活配置；必须先合并规则。
+- macOS App 通过系统 VPN 服务静默连接或断开 Shadowrocket，不使用 URL scheme，也不会打开其窗口；
+  它不会替你导入或激活配置，必须先合并规则。明文 CLI 为兼容旧工作流仍使用后台 URL scheme。
 - 不要将整个 `10.0.0.0/8` 指向 `HITSZ-aTrust`，也不要为 `10.248.98.30` 添加排除路由。
 - `dist/hitsz/legacy/` 是面向旧官方 aTrust 客户端的历史配置，不能与内置 HITSZ relay 同时作为
   活动方案。

@@ -31,6 +31,37 @@ func TestReadStartAliasesAndClientData(t *testing.T) {
 	}
 }
 
+func TestPrepareRuntimeConfigDisablesShadowrocketURLControl(t *testing.T) {
+	config := configs.Config{
+		Username:                     "student",
+		Password:                     "password",
+		MFAOTPSecret:                 "otp-secret",
+		Shadowrocket:                 "connect",
+		ShadowrocketUpdateSubs:       true,
+		ShadowrocketAddNodeFile:      "/tmp/node",
+		ShadowrocketDisconnectOnExit: true,
+		ClientDataFile:               "/tmp/client-data",
+		MFAOTPSecretFile:             "/tmp/otp",
+		DebugDump:                    true,
+	}
+
+	PrepareRuntimeConfig(&config)
+
+	if config.Shadowrocket != "off" || config.ShadowrocketUpdateSubs ||
+		config.ShadowrocketAddNodeFile != "" || config.ShadowrocketDisconnectOnExit {
+		t.Fatalf("Shadowrocket URL control was not disabled: %+v", config)
+	}
+	if config.ClientDataFile != "" || config.MFAOTPSecretFile != "" {
+		t.Fatal("bridge retained a runtime secret file path")
+	}
+	if !config.NonInteractive || config.DebugDump {
+		t.Fatalf("bridge safety flags = NonInteractive:%v DebugDump:%v", config.NonInteractive, config.DebugDump)
+	}
+	if config.Username != "student" || config.Password != "password" || config.MFAOTPSecret != "otp-secret" {
+		t.Fatal("bridge removed in-memory credentials required for authentication")
+	}
+}
+
 func TestEventsAreNDJSON(t *testing.T) {
 	var output bytes.Buffer
 	session := New(strings.NewReader(`{"type":"start","requestId":"r","config":{}}`+"\n"), &output)

@@ -245,6 +245,11 @@ struct BridgeConnectionConfig: Codable, Equatable {
         set { setOptionalString(newValue, for: "hitszDNSServer") }
     }
 
+    var autoDetectInterface: Bool {
+        get { bool("autoDetectInterface", default: true) }
+        set { values["autoDetectInterface"] = .bool(newValue) }
+    }
+
     var rememberSSO: Bool {
         get { bool("rememberSSO", default: true) }
         set { values["rememberSSO"] = .bool(newValue) }
@@ -326,7 +331,7 @@ struct BridgeConnectionConfig: Codable, Equatable {
         "fakeIP": .bool(false),
         "debugDump": .bool(false),
         "bindInterface": .string(""),
-        "autoDetectInterface": .bool(false),
+        "autoDetectInterface": .bool(true),
         "profile": .string("hitsz"),
         "noSystemDNSMutation": .bool(true),
         "mfaMethod": .string("otp"),

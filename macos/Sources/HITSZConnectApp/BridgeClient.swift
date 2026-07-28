@@ -4,6 +4,7 @@ struct BridgeInboundEvent {
     let type: String
     let state: String?
     let message: String?
+    let error: String?
     let requestId: String?
     let clientData: String?
     let method: String?
@@ -48,6 +49,7 @@ struct BridgeInboundEvent {
             type: type,
             state: values["state"] as? String,
             message: values["message"] as? String,
+            error: values["error"] as? String,
             requestId: values["requestId"] as? String,
             clientData: values["clientData"] as? String,
             method: values["method"] as? String,

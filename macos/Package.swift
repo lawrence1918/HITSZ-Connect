@@ -14,6 +14,11 @@ let package = Package(
         .executableTarget(
             name: "HITSZConnectApp",
             path: "Sources/HITSZConnectApp"
+        ),
+        .testTarget(
+            name: "HITSZConnectAppTests",
+            dependencies: ["HITSZConnectApp"],
+            path: "Tests/HITSZConnectAppTests"
         )
     ],
     swiftLanguageVersions: [.v5]

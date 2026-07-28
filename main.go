@@ -88,23 +88,7 @@ func main() {
 		if conf.Profile == "" {
 			conf.Profile = "hitsz"
 		}
-		// Bridge secrets are memory-only. The GUI owns encrypted persistence and
-		// exchanges session state through the clientData event.
-		conf.ClientDataFile = ""
-		conf.MFAOTPSecretFile = ""
-		conf.ResourceFile = ""
-		conf.ShadowrocketAddNodeFile = ""
-		conf.MFACode = ""
-		conf.CasTicket = ""
-		conf.OAuth2Code = ""
-		conf.SID = ""
-		conf.DeviceID = ""
-		conf.SignKey = ""
-		conf.GraphCodeFile = ""
-		// stdin belongs to the bridge dispatcher. MFA codes are delivered by
-		// explicit mfaCode commands instead of terminal prompts.
-		conf.NonInteractive = true
-		conf.DebugDump = false
+		appbridge.PrepareRuntimeConfig(&conf)
 		if err := applyProfile(&conf); err != nil {
 			_ = session.EmitError(err)
 			_ = session.EmitStopped("invalid bridge configuration")

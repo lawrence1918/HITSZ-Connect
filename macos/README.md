@@ -59,6 +59,15 @@ secret is placed in argv, an environment variable, or a temporary plaintext
 file. It accepts bridge events `phase`, `ready`, `status`, `clientData`,
 `mfaRequired`, `error`, and `stopped`.
 
-The UI polls macOS `scutil --nc` for Shadowrocket's real VPN state and byte
-counters, and invokes the `shadowrocket://connect` / `shadowrocket://disconnect`
-URL scheme only when the user chooses the corresponding action.
+The UI discovers Shadowrocket's NetworkExtension service UUID with
+`scutil --nc`, cross-checks the active Shadowrocket-labelled `utun`, and reads
+its byte counters through `getifaddrs`. It controls the VPN with
+`scutil --nc start/stop <UUID>`; the App never invokes a Shadowrocket URL
+scheme and therefore does not open or foreground the Shadowrocket window.
+
+When an existing Shadowrocket tunnel is active, the App pauses it before
+aTrust bootstrap so HITSZ authentication cannot be routed into the not-yet-
+available local SOCKS listener. The bridge always auto-detects a physical
+underlay, and Shadowrocket is restored or started only after the bridge emits
+`ready`. Cancellation, authentication failure, and application termination
+retain a restore lease for any tunnel that was active before the attempt.

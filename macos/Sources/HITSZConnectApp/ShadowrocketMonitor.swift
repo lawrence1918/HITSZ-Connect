@@ -1,4 +1,5 @@
-import AppKit
+import Darwin
+import Combine
 import Foundation
 
 enum ShadowrocketConnectionState: Equatable {
@@ -28,6 +29,20 @@ enum ShadowrocketConnectionState: Equatable {
         case .disconnected, .unknown: return "circle"
         }
     }
+
+    var isActive: Bool {
+        switch self {
+        case .connecting, .connected, .disconnecting: return true
+        case .unavailable, .disconnected, .unknown: return false
+        }
+    }
+
+    var shouldRestoreAfterBootstrap: Bool {
+        switch self {
+        case .connecting, .connected: return true
+        case .unavailable, .disconnected, .disconnecting, .unknown: return false
+        }
+    }
 }
 
 struct ShadowrocketSnapshot: Equatable {
@@ -48,9 +63,49 @@ struct ShadowrocketSnapshot: Equatable {
     )
 }
 
-/// Reads the macOS NetworkConnection state rather than inferring Shadowrocket
-/// status from whether its URL scheme was launched.  `scutil --nc` exposes the
-/// actual connected state and per-service byte counters maintained by macOS.
+enum ShadowrocketControlError: LocalizedError {
+    case serviceUnavailable
+    case commandFailed(String)
+    case timeout(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .serviceUnavailable:
+            return "macOS 没有找到 Shadowrocket 的 VPN 服务。请确认 Shadowrocket 已安装并创建过 VPN 配置。"
+        case let .commandFailed(message):
+            return message
+        case let .timeout(message):
+            return message
+        }
+    }
+}
+
+struct ShadowrocketService {
+    let identifier: String
+    let name: String
+}
+
+enum ShadowrocketBootstrapOutcome {
+    case ready(wasActive: Bool)
+    case failed(error: Error, restoreNeeded: Bool)
+}
+
+enum ShadowrocketBootstrapRestoreOutcome {
+    case notNeeded
+    case restored
+    case failed
+}
+
+private struct ProcessResult {
+    let status: Int32
+    let output: String
+}
+
+/// Monitors and controls Shadowrocket through its macOS NetworkExtension
+/// service.  URL schemes are deliberately not used here: opening a
+/// `shadowrocket://` URL can foreground the Catalyst window even when `open`
+/// receives `-g`. `scutil --nc start/stop` starts the same VPN service without
+/// opening a window.
 final class ShadowrocketMonitor: ObservableObject {
     @Published private(set) var snapshot = ShadowrocketSnapshot.initial
     var onSnapshot: ((ShadowrocketSnapshot) -> Void)?
@@ -58,6 +113,10 @@ final class ShadowrocketMonitor: ObservableObject {
     private let queue = DispatchQueue(label: "com.heheyizhi.hitsz-connect.shadowrocket")
     private var timer: Timer?
     private var previousCounters: (rx: Int64, tx: Int64, time: Date)?
+    // This lease is owned by the serial control queue rather than AppState.
+    // It makes application termination safe even if the bootstrap completion
+    // has not yet been delivered back to the main actor.
+    private var bootstrapRestoreRequired = false
 
     init() {
         refresh()
@@ -80,18 +139,153 @@ final class ShadowrocketMonitor: ObservableObject {
         }
     }
 
-    @discardableResult
-    func connect() -> Bool {
-        let result = NSWorkspace.shared.open(URL(string: "shadowrocket://connect")!)
-        refresh()
-        return result
+    /// Starts Shadowrocket's actual VPN service without opening its window.
+    func connect(completion: ((Result<Void, Error>) -> Void)? = nil) {
+        control(connected: true, completion: completion)
     }
 
+    /// Stops Shadowrocket's actual VPN service without opening its window.
+    func disconnect(completion: ((Result<Void, Error>) -> Void)? = nil) {
+        control(connected: false, completion: completion)
+    }
+
+    /// Completes a pending bootstrap lease synchronously and reports whether
+    /// no lease existed, restoration succeeded, or restoration failed.
+    func restoreBootstrapStateAndWait(timeout: TimeInterval = 5) -> ShadowrocketBootstrapRestoreOutcome {
+        queue.sync {
+            guard bootstrapRestoreRequired else { return .notNeeded }
+            guard let service = Self.shadowrocketService(from: Self.runScutil(["--nc", "list"]).output),
+                  Self.runScutil(["--nc", "start", service.identifier]).status == 0,
+                  case .success = Self.waitForState(active: true, service: service, timeout: timeout) else {
+                return .failed
+            }
+            bootstrapRestoreRequired = false
+            return .restored
+        }
+    }
+
+    /// Before aTrust authentication, pause an already-active Shadowrocket
+    /// tunnel. HITSZ rules commonly send the aTrust IdP through the local
+    /// SOCKS listener; that listener does not exist until aTrust is ready.
+    /// Returning the previous state lets AppState restore it afterwards.
+    func prepareForATrustBootstrap(completion: @escaping (ShadowrocketBootstrapOutcome) -> Void) {
+        queue.async {
+            let initial = Self.readSystemSnapshot()
+            let shouldRestore = initial.state.shouldRestoreAfterBootstrap
+            self.bootstrapRestoreRequired = false
+            guard initial.state.isActive else {
+                DispatchQueue.main.async { completion(.ready(wasActive: false)) }
+                return
+            }
+
+            guard let service = Self.shadowrocketService(from: Self.runScutil(["--nc", "list"]).output) else {
+                DispatchQueue.main.async {
+                    completion(.failed(error: ShadowrocketControlError.serviceUnavailable, restoreNeeded: false))
+                }
+                return
+            }
+
+            let stop = Self.runScutil(["--nc", "stop", service.identifier])
+            guard stop.status == 0 else {
+                let detail = stop.output.trimmingCharacters(in: .whitespacesAndNewlines)
+                let suffix = detail.isEmpty ? "命令退出状态 \(stop.status)" : detail
+                let error = ShadowrocketControlError.commandFailed("Shadowrocket 静默暂停失败：\(suffix)")
+                // Once a stop was attempted, restore conservatively even if
+                // the current snapshot still looks active: the asynchronous
+                // NetworkExtension teardown may finish after this callback.
+                let restoreNeeded = shouldRestore
+                self.bootstrapRestoreRequired = restoreNeeded
+                DispatchQueue.main.async {
+                    completion(.failed(error: error, restoreNeeded: restoreNeeded))
+                }
+                return
+            }
+
+            switch Self.waitForState(active: false, service: service, timeout: 8) {
+            case .success:
+                self.bootstrapRestoreRequired = shouldRestore
+                DispatchQueue.main.async { completion(.ready(wasActive: shouldRestore)) }
+            case let .failure(error):
+                let restoreNeeded = shouldRestore
+                self.bootstrapRestoreRequired = restoreNeeded
+                DispatchQueue.main.async {
+                    completion(.failed(error: error, restoreNeeded: restoreNeeded))
+                }
+            }
+        }
+    }
+
+    /// Synchronous shutdown helper used only while the app is terminating.
     @discardableResult
-    func disconnect() -> Bool {
-        let result = NSWorkspace.shared.open(URL(string: "shadowrocket://disconnect")!)
-        refresh()
-        return result
+    func disconnectAndWait(timeout: TimeInterval = 5) -> Bool {
+        queue.sync {
+            guard Self.readSystemSnapshot().state.isActive else { return true }
+            guard let service = Self.shadowrocketService(from: Self.runScutil(["--nc", "list"]).output) else { return false }
+            guard Self.runScutil(["--nc", "stop", service.identifier]).status == 0 else { return false }
+            if case .success = Self.waitForState(active: false, service: service, timeout: timeout) {
+                bootstrapRestoreRequired = false
+                return true
+            }
+            return false
+        }
+    }
+
+    /// Synchronous counterpart used during app termination when the App had
+    /// paused an existing Shadowrocket tunnel for aTrust bootstrap.
+    @discardableResult
+    func connectAndWait(timeout: TimeInterval = 5) -> Bool {
+        queue.sync {
+            guard let service = Self.shadowrocketService(from: Self.runScutil(["--nc", "list"]).output) else { return false }
+            guard Self.runScutil(["--nc", "start", service.identifier]).status == 0 else { return false }
+            if case .success = Self.waitForState(active: true, service: service, timeout: timeout) {
+                bootstrapRestoreRequired = false
+                return true
+            }
+            return false
+        }
+    }
+
+    private func control(connected: Bool, completion: ((Result<Void, Error>) -> Void)?) {
+        queue.async { [weak self] in
+            let list = Self.runScutil(["--nc", "list"])
+            guard let service = Self.shadowrocketService(from: list.output) else {
+                DispatchQueue.main.async {
+                    completion?(.failure(ShadowrocketControlError.serviceUnavailable))
+                }
+                return
+            }
+
+            let action = connected ? "start" : "stop"
+            let command = Self.runScutil(["--nc", action, service.identifier])
+            guard command.status == 0 else {
+                let detail = command.output.trimmingCharacters(in: .whitespacesAndNewlines)
+                let suffix = detail.isEmpty ? "命令退出状态 \(command.status)" : detail
+                let verb = connected ? "启动" : "断开"
+                DispatchQueue.main.async {
+                    completion?(.failure(ShadowrocketControlError.commandFailed("Shadowrocket \(verb)失败：\(suffix)")))
+                }
+                return
+            }
+
+            let result = Self.waitForState(
+                active: connected,
+                service: service,
+                timeout: 12
+            )
+            let snapshot = Self.readSystemSnapshot()
+            if case .success = result {
+                self?.bootstrapRestoreRequired = false
+            }
+            DispatchQueue.main.async { [weak self] in
+                self?.apply(snapshot)
+                switch result {
+                case .success:
+                    completion?(.success(()))
+                case let .failure(error):
+                    completion?(.failure(error))
+                }
+            }
+        }
     }
 
     private func apply(_ raw: ShadowrocketSnapshot) {
@@ -122,23 +316,32 @@ final class ShadowrocketMonitor: ObservableObject {
 
     private static func readSystemSnapshot() -> ShadowrocketSnapshot {
         let list = runScutil(["--nc", "list"])
-        guard let service = serviceName(from: list) else {
-            return ShadowrocketSnapshot(
-                serviceName: nil,
-                state: .unavailable,
-                rxBytes: 0,
-                txBytes: 0,
-                rxBytesPerSecond: 0,
-                txBytesPerSecond: 0
-            )
+        let service = shadowrocketService(from: list.output)
+        let interfaceOutput = runProcess("/sbin/ifconfig", ["-v"])
+        let interface = shadowrocketInterface(from: interfaceOutput.output)
+
+        var state: ShadowrocketConnectionState
+        if let service {
+            state = parseState(runScutil(["--nc", "status", service.identifier]).output)
+        } else {
+            state = .unavailable
+        }
+        // In some app/sandbox contexts scutil reports Disconnected while the
+        // NetworkExtension utun is already carrying traffic. The descriptor
+        // is the authoritative fallback for Shadowrocket's actual tunnel.
+        if interface != nil && (state == .disconnected || state == .unavailable || isUnknown(state)) {
+            state = .connected
         }
 
-        let statusOutput = runScutil(["--nc", "status", service])
-        let state = parseState(statusOutput)
-        let statistics = runScutil(["--nc", "statistics", service])
-        let counters = parseCounters(statistics)
+        var counters = (rx: Int64(0), tx: Int64(0))
+        if let interface, let interfaceCounters = interfaceCounters(interface) {
+            counters = interfaceCounters
+        } else if let service {
+            counters = parseCounters(runScutil(["--nc", "statistics", service.identifier]).output)
+        }
+
         return ShadowrocketSnapshot(
-            serviceName: service,
+            serviceName: service?.name ?? interface,
             state: state,
             rxBytes: counters.rx,
             txBytes: counters.tx,
@@ -147,48 +350,113 @@ final class ShadowrocketMonitor: ObservableObject {
         )
     }
 
-    private static func runScutil(_ arguments: [String]) -> String {
+    private static func waitForState(active: Bool, service: ShadowrocketService, timeout: TimeInterval) -> Result<Void, Error> {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let serviceState = parseState(runScutil(["--nc", "status", service.identifier]).output)
+            let interface = shadowrocketInterface(from: runProcess("/sbin/ifconfig", ["-v"]).output)
+            let reachedTarget: Bool
+            if active {
+                // Some NetworkExtension hosts briefly (and, on a few macOS
+                // releases, persistently) report Disconnected even after the
+                // packet tunnel is live. A running Shadowrocket-labelled utun
+                // is therefore an acceptable connected fallback.
+                reachedTarget = serviceState == .connected || interface != nil
+            } else {
+                // A disconnected scutil line is not sufficient: on some
+                // macOS/NetworkExtension combinations it is printed while a
+                // Shadowrocket-labelled utun is still carrying traffic. Wait
+                // for both the service and its tunnel descriptor to disappear.
+                reachedTarget = serviceState == .disconnected && interface == nil
+                    || (isUnknown(serviceState) && interface == nil)
+            }
+            if reachedTarget {
+                return .success(())
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        let desired = active ? "连接" : "断开"
+        return .failure(ShadowrocketControlError.timeout("等待 Shadowrocket \(desired)超时（服务：\(service.name)）。"))
+    }
+
+    private static func runScutil(_ arguments: [String]) -> ProcessResult {
+        runProcess("/usr/sbin/scutil", arguments)
+    }
+
+    private static func runProcess(_ executable: String, _ arguments: [String]) -> ProcessResult {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/scutil")
+        process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
         let output = Pipe()
         process.standardOutput = output
-        process.standardError = Pipe()
+        process.standardError = output
         do {
             try process.run()
+            let data = output.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
-            guard process.terminationStatus == 0 else { return "" }
-            return String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            return ProcessResult(
+                status: process.terminationStatus,
+                output: String(data: data, encoding: .utf8) ?? ""
+            )
         } catch {
-            return ""
+            return ProcessResult(status: -1, output: error.localizedDescription)
         }
     }
 
-    private static func serviceName(from listOutput: String) -> String? {
-        for line in listOutput.split(whereSeparator: \.isNewline) {
-            let text = String(line)
-            guard text.localizedCaseInsensitiveContains("shadowrocket") else { continue }
-            if let quoted = firstCapture(#"\"([^\"]*[Ss]hadowrocket[^\"]*)\""#, in: text) {
-                return quoted
+    static func shadowrocketService(from listOutput: String) -> ShadowrocketService? {
+        var fallback: ShadowrocketService?
+        for rawLine in listOutput.split(whereSeparator: \.isNewline) {
+            let line = String(rawLine)
+            guard line.localizedCaseInsensitiveContains("com.liguangming.Shadowrocket") else { continue }
+            guard let identifier = firstCapture(#"([0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12})"#, in: line) else { continue }
+            let name = firstCapture(#"\"([^\"]+)\""#, in: line) ?? "Shadowrocket"
+            let service = ShadowrocketService(identifier: identifier, name: name)
+            if line.localizedCaseInsensitiveContains("(Connected)")
+                || line.localizedCaseInsensitiveContains("(Connecting)") {
+                return service
             }
-            if let identifier = firstCapture(#"([0-9A-Fa-f]{8}-[0-9A-Fa-f-]{27,})"#, in: text) {
-                return identifier
+            if fallback == nil {
+                fallback = service
             }
-            // The common scutil form has the service name as the final token.
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty { return trimmed }
+        }
+        return fallback
+    }
+
+    static func shadowrocketInterface(from ifconfigOutput: String) -> String? {
+        var currentInterface: String?
+        var currentInterfaceIsRunning = false
+        for rawLine in ifconfigOutput.split(whereSeparator: \.isNewline) {
+            let line = String(rawLine)
+            if !line.hasPrefix(" "), let colon = line.firstIndex(of: ":"), line[line.index(after: colon)...].contains("flags=") {
+                currentInterface = String(line[..<colon])
+                currentInterfaceIsRunning = line.contains("<UP,") && line.contains("RUNNING")
+            }
+            if currentInterfaceIsRunning,
+               line.localizedCaseInsensitiveContains("desc:\"VPN: Shadowrocket\"") {
+                return currentInterface
+            }
         }
         return nil
     }
 
-    private static func parseState(_ output: String) -> ShadowrocketConnectionState {
-        let state = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        let lower = state.lowercased()
-        if lower.contains("disconnected") { return .disconnected }
-        if lower.contains("disconnecting") { return .disconnecting }
-        if lower.contains("connecting") { return .connecting }
-        if lower.contains("connected") { return .connected }
-        return .unknown(state)
+    static func parseState(_ output: String) -> ShadowrocketConnectionState {
+        let state = output
+            .split(whereSeparator: \.isNewline)
+            .first
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        switch state.lowercased() {
+        case "disconnecting": return .disconnecting
+        case "disconnected": return .disconnected
+        case "connecting": return .connecting
+        case "connected": return .connected
+        default: return .unknown(state)
+        }
+    }
+
+    private static func isUnknown(_ state: ShadowrocketConnectionState) -> Bool {
+        if case .unknown = state { return true }
+        return false
     }
 
     private static func parseCounters(_ output: String) -> (rx: Int64, tx: Int64) {
@@ -204,6 +472,25 @@ final class ShadowrocketMonitor: ObservableObject {
             }
         }
         return (rx, tx)
+    }
+
+    private static func interfaceCounters(_ interfaceName: String) -> (rx: Int64, tx: Int64)? {
+        var addresses: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&addresses) == 0, let first = addresses else { return nil }
+        defer { freeifaddrs(first) }
+
+        var cursor: UnsafeMutablePointer<ifaddrs>? = first
+        while let address = cursor {
+            defer { cursor = address.pointee.ifa_next }
+            guard let name = address.pointee.ifa_name,
+                  String(cString: name) == interfaceName,
+                  let data = address.pointee.ifa_data,
+                  let socketAddress = address.pointee.ifa_addr,
+                  socketAddress.pointee.sa_family == UInt8(AF_LINK) else { continue }
+            let statistics = data.assumingMemoryBound(to: if_data.self).pointee
+            return (Int64(statistics.ifi_ibytes), Int64(statistics.ifi_obytes))
+        }
+        return nil
     }
 
     private static func firstCapture(_ pattern: String, in text: String) -> String? {

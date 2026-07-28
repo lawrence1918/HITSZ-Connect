@@ -33,6 +33,35 @@ type StartRequest struct {
 	ClientDataProvided bool
 }
 
+// PrepareRuntimeConfig removes options which must never be sourced from a GUI
+// bridge request. Credentials and reusable session data stay in memory, while
+// the App owns encrypted persistence and Shadowrocket lifecycle.
+func PrepareRuntimeConfig(config *configs.Config) {
+	config.ClientDataFile = ""
+	config.MFAOTPSecretFile = ""
+	config.ResourceFile = ""
+	config.MFACode = ""
+	config.CasTicket = ""
+	config.OAuth2Code = ""
+	config.SID = ""
+	config.DeviceID = ""
+	config.SignKey = ""
+	config.GraphCodeFile = ""
+
+	// The App uses scutil to control Shadowrocket's NetworkExtension service
+	// without launching or foregrounding its window. The Go bridge must never
+	// perform a second URL-scheme action for the same connection.
+	config.Shadowrocket = "off"
+	config.ShadowrocketUpdateSubs = false
+	config.ShadowrocketAddNodeFile = ""
+	config.ShadowrocketDisconnectOnExit = false
+
+	// stdin belongs to the bridge dispatcher. MFA codes arrive as explicit
+	// mfaCode commands rather than terminal prompts.
+	config.NonInteractive = true
+	config.DebugDump = false
+}
+
 // ListenerStatus reports whether the application-facing listeners are ready.
 type ListenerStatus struct {
 	Ready    bool `json:"ready"`

@@ -14,6 +14,7 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/mythologyli/zju-connect/client/atrust"
 	"github.com/mythologyli/zju-connect/configs"
+	"github.com/mythologyli/zju-connect/internal/connectionprofile"
 )
 
 var CommitID string
@@ -21,7 +22,7 @@ var appBridge bool
 var secureConfigID string
 var listSecureConfigs bool
 
-const hitszConnectVersion = "1.3.0-hitsz.1"
+const hitszConnectVersion = "1.3.1-hitsz.1"
 
 func getTOMLVal[T int | uint64 | string | bool](valPointer *T, defaultVal T) T {
 	if valPointer == nil {
@@ -151,50 +152,8 @@ func parseTOMLConfig(configFile string, conf *configs.Config) error {
 	return nil
 }
 
-// applyProfile only fills profile-owned defaults. Explicit non-default values
-// remain available for campuses that deploy the same aTrust flow differently.
 func applyProfile(conf *configs.Config) error {
-	switch conf.Profile {
-	case "", "default":
-		return nil
-	case "hitsz":
-		conf.Protocol = "atrust"
-		if conf.ServerAddress == "" || conf.ServerAddress == "rvpn.zju.edu.cn" || conf.ServerAddress == "vpn.zju.edu.cn" {
-			conf.ServerAddress = "trust.hitsz.edu.cn"
-		}
-		if conf.LoginDomain == "" || conf.LoginDomain == "Radius" {
-			conf.LoginDomain = "hitcas"
-		}
-		if conf.AuthType == "" {
-			conf.AuthType = "auth/hitsz-sso"
-		}
-		if conf.DNSRelayBind == "" {
-			conf.DNSRelayBind = "127.0.0.1:53535"
-		}
-		if conf.HITSZDNSServer == "" {
-			conf.HITSZDNSServer = "10.248.98.30"
-		}
-		// The HITSZ SOCKS/HTTP endpoints are consumed by the local
-		// Shadowrocket packet tunnel. They must not be exposed to the LAN.
-		if conf.SocksBind == ":1080" {
-			conf.SocksBind = "127.0.0.1:1080"
-		}
-		if conf.HTTPBind == ":1081" {
-			conf.HTTPBind = "127.0.0.1:1081"
-		}
-		// Shadowrocket only sends server-issued HITSZ rules to this local
-		// proxy. Fail closed for anything outside that ACL: a direct fallback
-		// would be captured by Shadowrocket again and can form a proxy loop.
-		conf.ProxyAll = true
-		// aTrust's legacy fake-IP and global DNS hooks conflict with packet
-		// tunnel clients such as Shadowrocket.
-		conf.FakeIP = false
-		conf.DNSHijack = false
-		conf.NoSystemDNSMutation = true
-		return nil
-	default:
-		return fmt.Errorf("HITSZ Connect: unsupported profile %q", conf.Profile)
-	}
+	return connectionprofile.Apply(conf)
 }
 
 func init() {

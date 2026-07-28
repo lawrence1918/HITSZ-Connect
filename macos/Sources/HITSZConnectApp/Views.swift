@@ -213,9 +213,9 @@ private struct DashboardView: View {
 
             HStack(spacing: 10) {
                 Button("连接 Shadowrocket") { state.connectShadowrocket() }
-                    .disabled(state.shadowrocketSnapshot.state == .connected)
+                    .disabled(state.isBusy || state.shadowrocketSnapshot.state == .connected)
                 Button("断开 Shadowrocket") { state.disconnectShadowrocket() }
-                    .disabled(state.shadowrocketSnapshot.state == .disconnected || state.shadowrocketSnapshot.state == .unavailable)
+                    .disabled(state.isBusy || state.shadowrocketSnapshot.state == .disconnected || state.shadowrocketSnapshot.state == .unavailable)
                 Spacer()
                 Text("配置均加密存储于 ~/Documents/hitsz-connect")
                     .font(.footnote)
@@ -475,7 +475,7 @@ struct StatusMenuView: View {
                 .foregroundStyle(.secondary)
             Divider()
             HStack {
-                if state.phase == .connected || state.isBusy {
+                if state.phase == .connected || state.phase == .connecting || state.phase == .disconnecting {
                     Button("关闭 aTrust") { state.stopConnection() }
                         .disabled(state.phase == .disconnecting)
                 } else {
@@ -489,6 +489,7 @@ struct StatusMenuView: View {
                         state.connectShadowrocket()
                     }
                 }
+                .disabled(state.isBusy)
             }
             Divider()
             Button("打开主窗口") { bringMainWindowToFront() }
