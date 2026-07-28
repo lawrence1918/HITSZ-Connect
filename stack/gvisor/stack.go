@@ -30,7 +30,15 @@ type Stack struct {
 }
 
 const NICID tcpip.NICID = 1
-const MTU uint32 = 1400
+
+// The aTrust L3 transport is carried over a reliable TCP connection, so its
+// virtual IPv4 link can use the normal Ethernet MTU. Keeping this at 1400
+// causes Moonlight's fixed-size UDP video datagrams to be fragmented by
+// gVisor. The aTrust L3 path selects its tunnel by UDP five-tuple, and
+// non-initial IPv4 fragments have no UDP header for that lookup, so this
+// client drops them before forwarding. Using 1500 keeps normal Moonlight
+// datagrams intact.
+const MTU uint32 = 1500
 
 // L3Conn.Read delivers one complete IPv4 datagram per call. Its implementation
 // copies into the supplied slice and cannot report a short buffer, so using the
