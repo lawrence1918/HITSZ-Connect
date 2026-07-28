@@ -4,7 +4,7 @@ HITSZ Connect 是面向哈尔滨工业大学（深圳）aTrust 校园资源访�
 和命令行程序。它支持 HITSZ 统一认证、多因素认证、校内 DNS 中继，以及与 Shadowrocket 的安全
 分流协作。
 
-当前发布版本为 **HITSZ Connect 1.3.1**，内置 CLI 版本为 **1.3.1-hitsz.1**。
+当前发布版本为 **HITSZ Connect 1.3.4**，内置 CLI 版本为 **1.3.4-hitsz.1**。
 
 > 非校方官方客户端。本软件按现状提供，不保证可用性、连续性或对任何网络环境的兼容性；请自行评估
 > 风险并遵守学校网络与服务使用规定。
@@ -40,9 +40,9 @@ HITSZ 是本 fork 的维护和实际验证重点。其他学校及上游通用�
   接管其它域名的 DNS。
 - Shadowrocket 的动态规则会将服务器下发的资源域名，以及已确认的 `10.248.*`、`10.249.*`、
   `10.250.*` 校园资源转发至本地 SOCKS。未获 aTrust ACL 授权的目标会被拒绝，不会回落为直连。
-- App 发起连接时会先用 `scutil --nc stop` 静默暂停已有 Shadowrocket，强制 aTrust 认证使用自动检测
-  的物理出口；本地 SOCKS、HTTP 和 DNS relay 就绪后再用 `scutil --nc start` 静默恢复或连接。
-  这个流程不会打开或置前 Shadowrocket 窗口。
+- App 发起连接时会先静默暂停已有 Shadowrocket，再让 aTrust 认证使用系统路由；本地 SOCKS、
+  HTTP 和 DNS relay 就绪后再静默恢复或连接。控制优先使用 `scutil --nc`；若 URL scheme 启动的
+  活动 `utun` 不受该服务控制，则回退到 CLI 同款 `open -g -j` 隐藏后台命令，不会打开或置前窗口。
 - 普通外网流量仍由你在 Shadowrocket 中选定的节点和 `FINAL,PROXY` 规则处理。
 
 ## 支持范围
@@ -136,19 +136,32 @@ xattr -rd com.apple.quarantine ./hitsz-connect-darwin-arm64
 
 使用 App 或短信 MFA 时，将 `-mfa-method` 改为 `app` 或 `sms`；程序会在终端提示输入动态码。
 
-这些参数保留用于上游兼容和调试，不是 1.3.1 的推荐凭据存储方式：`-password` 可能进入 shell
+这些参数保留用于上游兼容和调试，不是 1.3.4 的推荐凭据存储方式：`-password` 可能进入 shell
 历史和进程列表，`-mfa-otp-secret-file`、`-client-data-file`、`-config` 及生成的规则文件均为
 明文文件。必须使用时，应限制文件权限、退出后妥善处置，并避免把任何内容提交、同步或贴入问题
 报告。新安装优先使用 App 或 `-secure-config`。
 
 ## Shadowrocket 分流原则
 
-- macOS App 通过系统 VPN 服务静默连接或断开 Shadowrocket，不使用 URL scheme，也不会打开其窗口；
-  它不会替你导入或激活配置，必须先合并规则。明文 CLI 为兼容旧工作流仍使用后台 URL scheme。
+- macOS App 优先通过系统 VPN 服务静默控制 Shadowrocket；当 `scutil` 状态与实际运行的
+  Shadowrocket `utun` 不一致时，使用 `open -g -j` URL scheme 兜底。两条路径都不会打开或置前
+  窗口；App 不会替你导入或激活配置，必须先合并规则。
 - 不要将整个 `10.0.0.0/8` 指向 `HITSZ-aTrust`，也不要为 `10.248.98.30` 添加排除路由。
 - `dist/hitsz/legacy/` 是面向旧官方 aTrust 客户端的历史配置，不能与内置 HITSZ relay 同时作为
   活动方案。
 - 账户相关的 `-shadowrocket-config-fragment` 输出应在 aTrust 资源变化后重新生成；不要提交它。
+
+## 登录 401 排查
+
+- HITSZ profile 默认使用系统路由，不再强制把 CAS/IdP socket 绑定到自动检测的物理接口。只有明确
+  需要时才手动启用 `-auto-detect-interface` 或指定 `-bind-interface`；Fake-IP VPN 同时运行时优先
+  保持默认值。1.3.1 App 已保存的加密配置会在运行时自动迁移，无需删除或重新录入。
+- 程序会在提交密码前执行官方验证码预检。需要滑块时，会在默认浏览器打开仅监听
+  `127.0.0.1` 的临时验证页，并使用当前 HITSZ Connect 登录会话提交官方拼图结果；验证完成后
+  自动继续连接。直接打开 `ids.hit.edu.cn` 可能复用浏览器自己的 CAS 会话，因此不能替代该页面。
+- `-non-interactive` 不会打开滑块页面；服务端要求滑块时会明确退出。App 默认允许交互验证。
+- 其余 HTTP 401 还可能表示密码被拒绝或账号风控。参考实现记录的已知风控条件包括累计并行会话或
+  登录 IP 过多；程序不会自动绕过这类服务端限制。
 
 ## 安全注意事项
 

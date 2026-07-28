@@ -13,21 +13,34 @@ type TerminalItem struct {
 	name string
 }
 
-var terminalFuncList []TerminalItem
+type terminalRegistry struct {
+	mu      sync.Mutex
+	items   []TerminalItem
+	started bool
+	done    chan struct{}
+	errs    []error
+}
 
-var terminalBegin = false
-var terminalMu sync.Mutex
+func newTerminalRegistry() *terminalRegistry {
+	return &terminalRegistry{}
+}
+
+var defaultTerminalRegistry = newTerminalRegistry()
 
 func RegisterTerminalFunc(execName string, fun TerminalFunc) {
-	terminalMu.Lock()
-	defer terminalMu.Unlock()
+	defaultTerminalRegistry.register(execName, fun)
+}
 
-	if terminalBegin {
+func (registry *terminalRegistry) register(execName string, fun TerminalFunc) {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+
+	if registry.started {
 		log.Println("Terminal already started, skip registering func:", execName)
 		return
 	}
 
-	terminalFuncList = append(terminalFuncList, TerminalItem{
+	registry.items = append(registry.items, TerminalItem{
 		f:    fun,
 		name: execName,
 	})
@@ -35,14 +48,33 @@ func RegisterTerminalFunc(execName string, fun TerminalFunc) {
 }
 
 func ExecTerminalFunc(ctx context.Context) []error {
-	terminalMu.Lock()
-	if terminalBegin {
-		terminalMu.Unlock()
-		return nil
+	return defaultTerminalRegistry.exec(ctx)
+}
+
+func (registry *terminalRegistry) exec(ctx context.Context) []error {
+	registry.mu.Lock()
+	if registry.started {
+		done := registry.done
+		registry.mu.Unlock()
+
+		// Prefer an already-published cleanup result over a concurrently cancelled
+		// context. This keeps every completed caller's view deterministic.
+		select {
+		case <-done:
+			return registry.resultCopy()
+		default:
+		}
+		select {
+		case <-done:
+			return registry.resultCopy()
+		case <-ctx.Done():
+			return []error{ctx.Err()}
+		}
 	}
-	terminalBegin = true
-	funcList := append([]TerminalItem(nil), terminalFuncList...)
-	terminalMu.Unlock()
+	registry.started = true
+	registry.done = make(chan struct{})
+	funcList := append([]TerminalItem(nil), registry.items...)
+	registry.mu.Unlock()
 
 	var errList []error
 	for _, item := range funcList {
@@ -54,12 +86,27 @@ func ExecTerminalFunc(ctx context.Context) []error {
 			log.Println("Exec func on terminal ", item.name, "success")
 		}
 	}
-	return errList
+
+	registry.mu.Lock()
+	registry.errs = append([]error(nil), errList...)
+	close(registry.done)
+	result := append([]error(nil), registry.errs...)
+	registry.mu.Unlock()
+	return result
+}
+
+func (registry *terminalRegistry) resultCopy() []error {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	return append([]error(nil), registry.errs...)
 }
 
 func IsTerminal() bool {
-	terminalMu.Lock()
-	defer terminalMu.Unlock()
+	return defaultTerminalRegistry.isStarted()
+}
 
-	return terminalBegin
+func (registry *terminalRegistry) isStarted() bool {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	return registry.started
 }

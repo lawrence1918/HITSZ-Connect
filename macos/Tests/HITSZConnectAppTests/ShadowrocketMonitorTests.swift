@@ -50,8 +50,35 @@ import Testing
     #expect(!ShadowrocketConnectionState.disconnected.shouldRestoreAfterBootstrap)
 }
 
-@Test func bridgeConfigDefaultsToPhysicalUnderlayDetection() {
-    #expect(BridgeConnectionConfig().autoDetectInterface)
+@Test func bridgeConfigDefaultsToSystemRouting() {
+    #expect(!BridgeConnectionConfig().autoDetectInterface)
+}
+
+@Test func appBridgeNormalizesRegressedUnderlayAndShadowrocketSettings() {
+    var saved = BridgeConnectionConfig()
+    saved.autoDetectInterface = true
+    saved.shadowrocket = "connect"
+    saved.shadowrocketUpdateSubs = true
+    saved.shadowrocketDisconnectOnExit = true
+
+    let runtime = saved.preparedForAppBridge()
+    #expect(!runtime.autoDetectInterface)
+    #expect(runtime.shadowrocket == "off")
+    #expect(!runtime.shadowrocketUpdateSubs)
+    #expect(!runtime.shadowrocketDisconnectOnExit)
+
+    // Preparing a runtime copy must not mutate the encrypted profile model.
+    #expect(saved.autoDetectInterface)
+    #expect(saved.shadowrocket == "connect")
+}
+
+@Test func shadowrocketURLFallbackIsHiddenAndBackgroundOnly() {
+    #expect(ShadowrocketMonitor.shadowrocketBundleArguments() == [
+        "-g", "-j", "-b", "com.liguangming.Shadowrocket"
+    ])
+    #expect(ShadowrocketMonitor.shadowrocketURLArguments("connect") == [
+        "-g", "-j", "shadowrocket://connect"
+    ])
 }
 
 @Test func bridgeErrorFieldIsDecoded() {

@@ -61,13 +61,23 @@ file. It accepts bridge events `phase`, `ready`, `status`, `clientData`,
 
 The UI discovers Shadowrocket's NetworkExtension service UUID with
 `scutil --nc`, cross-checks the active Shadowrocket-labelled `utun`, and reads
-its byte counters through `getifaddrs`. It controls the VPN with
-`scutil --nc start/stop <UUID>`; the App never invokes a Shadowrocket URL
-scheme and therefore does not open or foreground the Shadowrocket window.
+its byte counters through `getifaddrs`. It controls the VPN primarily with
+`scutil --nc start/stop <UUID>`. If a URL-scheme-started tunnel has a running
+utun while that service still says Disconnected, the App falls back to
+`open -g -j shadowrocket://...`, matching the CLI without opening or
+foregrounding the Shadowrocket window.
 
 When an existing Shadowrocket tunnel is active, the App pauses it before
 aTrust bootstrap so HITSZ authentication cannot be routed into the not-yet-
-available local SOCKS listener. The bridge always auto-detects a physical
-underlay, and Shadowrocket is restored or started only after the bridge emits
-`ready`. Cancellation, authentication failure, and application termination
-retain a restore lease for any tunnel that was active before the attempt.
+available local SOCKS listener. The bridge keeps system routing by default;
+forcing every CAS/IdP socket onto an auto-detected interface can change the
+IdP-visible path and conflict with Fake-IP VPNs. Shadowrocket is restored or
+started only after the bridge emits `ready`. Cancellation, authentication
+failure, and application termination retain a restore lease for any tunnel
+that was active before the attempt.
+
+If the HITSZ IdP requests its slider CAPTCHA, the bundled bridge opens a
+tokenized localhost page in the default browser. The puzzle is fetched and
+verified with the bridge's own IdP cookie session, then the App continues the
+credential flow. Opening the public IdP page directly can reuse unrelated
+browser CAS cookies and does not satisfy this challenge.

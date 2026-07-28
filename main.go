@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -62,6 +63,8 @@ var activeSecureConfig *secureConfigRuntime
 
 func main() {
 	log.Init()
+	stopSignalCleanup := installSignalCleanup()
+	defer stopSignalCleanup()
 	if listSecureConfigs {
 		if err := printSecureConfigs(); err != nil {
 			log.Fatalf("List encrypted connections: %s", err)
@@ -114,6 +117,38 @@ func main() {
 	}
 	if conf.DebugDump {
 		log.EnableDebug()
+	}
+	if err := validateFileSourcePaths(conf); err != nil {
+		fatalf("Invalid file argument: %s", err)
+	}
+
+	shadowrocketController := shadowrocket.New()
+	var shadowrocketRestorePending atomic.Bool
+	if conf.Profile == "hitsz" && activeBridge == nil && runtime.GOOS == "darwin" {
+		statusCtx, statusCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		shadowrocketActive, statusErr := shadowrocketController.IsConnected(statusCtx)
+		statusCancel()
+		if statusErr != nil {
+			fatalf("Inspect Shadowrocket before aTrust bootstrap: %s", statusErr)
+		}
+		if shadowrocketActive {
+			shadowrocketRestorePending.Store(true)
+			hook_func.RegisterTerminalFunc("RestoreBootstrapShadowrocket", func(ctx context.Context) error {
+				if !shadowrocketRestorePending.Load() {
+					return nil
+				}
+				restoreCtx, restoreCancel := context.WithTimeout(ctx, 5*time.Second)
+				defer restoreCancel()
+				return shadowrocketController.Apply(restoreCtx, "connect", "", false)
+			})
+			log.Println("Silently pausing Shadowrocket before aTrust authentication")
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			stopErr := shadowrocketController.DisconnectAndWait(stopCtx)
+			stopCancel()
+			if stopErr != nil {
+				fatalf("Pause Shadowrocket before aTrust bootstrap: %s", stopErr)
+			}
+		}
 	}
 
 	if errs := hook_func.ExecInitialFunc(context.Background(), conf); errs != nil {
@@ -441,14 +476,18 @@ func main() {
 		}
 		log.Printf("Shadowrocket config fragment saved to %s", conf.ShadowrocketConfigFragment)
 	}
-	if conf.Shadowrocket != "off" || conf.ShadowrocketAddNodeFile != "" || conf.ShadowrocketUpdateSubs {
-		controller := shadowrocket.New()
-		if err := controller.Apply(context.Background(), conf.Shadowrocket, conf.ShadowrocketAddNodeFile, conf.ShadowrocketUpdateSubs); err != nil {
+	if conf.Shadowrocket != "off" || conf.ShadowrocketAddNodeFile != "" || conf.ShadowrocketUpdateSubs || shadowrocketRestorePending.Load() {
+		action := conf.Shadowrocket
+		if shadowrocketRestorePending.Load() {
+			action = "connect"
+		}
+		if err := shadowrocketController.Apply(context.Background(), action, conf.ShadowrocketAddNodeFile, conf.ShadowrocketUpdateSubs); err != nil {
 			fatalf("Shadowrocket integration error: %s", err)
 		}
+		shadowrocketRestorePending.Store(false)
 		if conf.ShadowrocketDisconnectOnExit && conf.Shadowrocket == "connect" {
 			hook_func.RegisterTerminalFunc("DisconnectShadowrocket", func(ctx context.Context) error {
-				return controller.Disconnect(ctx)
+				return shadowrocketController.Disconnect(ctx)
 			})
 		}
 	}
@@ -585,9 +624,19 @@ func loadSecureConfig(id string) error {
 	if err != nil {
 		return err
 	}
-	loaded := connection.ToConfig()
-	if err := applyProfile(&loaded); err != nil {
+	loaded, err := prepareSecureConfigRuntime(connection)
+	if err != nil {
 		return err
+	}
+	conf = loaded
+	activeSecureConfig = &secureConfigRuntime{store: store, connection: connection}
+	return nil
+}
+
+func prepareSecureConfigRuntime(connection secureconfig.StoredConnection) (configs.Config, error) {
+	loaded := connection.ToConfig()
+	if err := applySecureConfigProfile(&loaded); err != nil {
+		return configs.Config{}, err
 	}
 	if loaded.Protocol == "atrust" && loaded.ServerAddress == "rvpn.zju.edu.cn" {
 		loaded.ServerAddress = "vpn.zju.edu.cn"
@@ -595,11 +644,9 @@ func loadSecureConfig(id string) error {
 		loaded.ServerAddress = "rvpn.zju.edu.cn"
 	}
 	if err := validateSecureConfigRuntime(loaded); err != nil {
-		return err
+		return configs.Config{}, err
 	}
-	conf = loaded
-	activeSecureConfig = &secureConfigRuntime{store: store, connection: connection}
-	return nil
+	return loaded, nil
 }
 
 func validateSecureConfigRuntime(config configs.Config) error {
@@ -670,7 +717,7 @@ func emitBridgeStatus(ctx context.Context, bridge *bridgeRuntime) {
 	}
 }
 
-func waitForShutdown() {
+func installSignalCleanup() func() {
 	quit := make(chan os.Signal, 1)
 	if runtime.GOOS == "windows" {
 		signal.Notify(quit, syscall.SIGINT)
@@ -678,17 +725,22 @@ func waitForShutdown() {
 	} else {
 		signal.Notify(quit, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	}
-	defer signal.Stop(quit)
-
-	if activeBridge == nil {
+	go func() {
 		<-quit
-		return
+		log.Println("Shutdown HITSZ Connect after signal ......")
+		for _, err := range hook_func.ExecTerminalFunc(context.Background()) {
+			log.Printf("Signal cleanup failed: %s", err)
+		}
+		os.Exit(0)
+	}()
+	return func() { signal.Stop(quit) }
+}
+
+func waitForShutdown() {
+	if activeBridge == nil {
+		select {}
 	}
-	select {
-	case <-activeBridge.session.StopChan():
-	case <-quit:
-		activeBridge.session.RequestStop()
-	}
+	<-activeBridge.session.StopChan()
 }
 
 func fatalf(format string, values ...any) {
@@ -698,11 +750,15 @@ func fatalf(format string, values ...any) {
 			activeBridge.statusCancel()
 		}
 		_ = activeBridge.session.EmitError(err)
-		cleanupErrs := hook_func.ExecTerminalFunc(context.Background())
+	}
+	cleanupErrs := hook_func.ExecTerminalFunc(context.Background())
+	if activeBridge != nil {
 		if cleanupErrs != nil {
 			_ = activeBridge.session.EmitError(errors.Join(cleanupErrs...))
 		}
 		_ = activeBridge.session.EmitStopped("HITSZ Connect stopped after an error")
+	} else if cleanupErrs != nil {
+		log.Printf("Cleanup after fatal error failed: %s", errors.Join(cleanupErrs...))
 	}
 	log.Fatalf("%s", err)
 }

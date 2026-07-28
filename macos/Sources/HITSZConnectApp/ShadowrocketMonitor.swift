@@ -101,11 +101,11 @@ private struct ProcessResult {
     let output: String
 }
 
-/// Monitors and controls Shadowrocket through its macOS NetworkExtension
-/// service.  URL schemes are deliberately not used here: opening a
-/// `shadowrocket://` URL can foreground the Catalyst window even when `open`
-/// receives `-g`. `scutil --nc start/stop` starts the same VPN service without
-/// opening a window.
+/// Monitors Shadowrocket through its NetworkExtension service and labelled
+/// utun. `scutil --nc` is the primary control path. Some URL-scheme-started
+/// tunnels are invisible to that service, so control falls back to the same
+/// `open -g -j shadowrocket://...` path as the CLI; `-g -j` keeps the Catalyst
+/// app hidden and out of the foreground.
 final class ShadowrocketMonitor: ObservableObject {
     @Published private(set) var snapshot = ShadowrocketSnapshot.initial
     var onSnapshot: ((ShadowrocketSnapshot) -> Void)?
@@ -154,9 +154,7 @@ final class ShadowrocketMonitor: ObservableObject {
     func restoreBootstrapStateAndWait(timeout: TimeInterval = 5) -> ShadowrocketBootstrapRestoreOutcome {
         queue.sync {
             guard bootstrapRestoreRequired else { return .notNeeded }
-            guard let service = Self.shadowrocketService(from: Self.runScutil(["--nc", "list"]).output),
-                  Self.runScutil(["--nc", "start", service.identifier]).status == 0,
-                  case .success = Self.waitForState(active: true, service: service, timeout: timeout) else {
+            guard case .success = Self.controlSynchronously(connected: true, timeout: timeout) else {
                 return .failed
             }
             bootstrapRestoreRequired = false
@@ -178,30 +176,7 @@ final class ShadowrocketMonitor: ObservableObject {
                 return
             }
 
-            guard let service = Self.shadowrocketService(from: Self.runScutil(["--nc", "list"]).output) else {
-                DispatchQueue.main.async {
-                    completion(.failed(error: ShadowrocketControlError.serviceUnavailable, restoreNeeded: false))
-                }
-                return
-            }
-
-            let stop = Self.runScutil(["--nc", "stop", service.identifier])
-            guard stop.status == 0 else {
-                let detail = stop.output.trimmingCharacters(in: .whitespacesAndNewlines)
-                let suffix = detail.isEmpty ? "命令退出状态 \(stop.status)" : detail
-                let error = ShadowrocketControlError.commandFailed("Shadowrocket 静默暂停失败：\(suffix)")
-                // Once a stop was attempted, restore conservatively even if
-                // the current snapshot still looks active: the asynchronous
-                // NetworkExtension teardown may finish after this callback.
-                let restoreNeeded = shouldRestore
-                self.bootstrapRestoreRequired = restoreNeeded
-                DispatchQueue.main.async {
-                    completion(.failed(error: error, restoreNeeded: restoreNeeded))
-                }
-                return
-            }
-
-            switch Self.waitForState(active: false, service: service, timeout: 8) {
+            switch Self.controlSynchronously(connected: false, timeout: 10) {
             case .success:
                 self.bootstrapRestoreRequired = shouldRestore
                 DispatchQueue.main.async { completion(.ready(wasActive: shouldRestore)) }
@@ -220,9 +195,7 @@ final class ShadowrocketMonitor: ObservableObject {
     func disconnectAndWait(timeout: TimeInterval = 5) -> Bool {
         queue.sync {
             guard Self.readSystemSnapshot().state.isActive else { return true }
-            guard let service = Self.shadowrocketService(from: Self.runScutil(["--nc", "list"]).output) else { return false }
-            guard Self.runScutil(["--nc", "stop", service.identifier]).status == 0 else { return false }
-            if case .success = Self.waitForState(active: false, service: service, timeout: timeout) {
+            if case .success = Self.controlSynchronously(connected: false, timeout: timeout) {
                 bootstrapRestoreRequired = false
                 return true
             }
@@ -235,9 +208,7 @@ final class ShadowrocketMonitor: ObservableObject {
     @discardableResult
     func connectAndWait(timeout: TimeInterval = 5) -> Bool {
         queue.sync {
-            guard let service = Self.shadowrocketService(from: Self.runScutil(["--nc", "list"]).output) else { return false }
-            guard Self.runScutil(["--nc", "start", service.identifier]).status == 0 else { return false }
-            if case .success = Self.waitForState(active: true, service: service, timeout: timeout) {
+            if case .success = Self.controlSynchronously(connected: true, timeout: timeout) {
                 bootstrapRestoreRequired = false
                 return true
             }
@@ -247,31 +218,7 @@ final class ShadowrocketMonitor: ObservableObject {
 
     private func control(connected: Bool, completion: ((Result<Void, Error>) -> Void)?) {
         queue.async { [weak self] in
-            let list = Self.runScutil(["--nc", "list"])
-            guard let service = Self.shadowrocketService(from: list.output) else {
-                DispatchQueue.main.async {
-                    completion?(.failure(ShadowrocketControlError.serviceUnavailable))
-                }
-                return
-            }
-
-            let action = connected ? "start" : "stop"
-            let command = Self.runScutil(["--nc", action, service.identifier])
-            guard command.status == 0 else {
-                let detail = command.output.trimmingCharacters(in: .whitespacesAndNewlines)
-                let suffix = detail.isEmpty ? "命令退出状态 \(command.status)" : detail
-                let verb = connected ? "启动" : "断开"
-                DispatchQueue.main.async {
-                    completion?(.failure(ShadowrocketControlError.commandFailed("Shadowrocket \(verb)失败：\(suffix)")))
-                }
-                return
-            }
-
-            let result = Self.waitForState(
-                active: connected,
-                service: service,
-                timeout: 12
-            )
+            let result = Self.controlSynchronously(connected: connected, timeout: 12)
             let snapshot = Self.readSystemSnapshot()
             if case .success = result {
                 self?.bootstrapRestoreRequired = false
@@ -357,11 +304,9 @@ final class ShadowrocketMonitor: ObservableObject {
             let interface = shadowrocketInterface(from: runProcess("/sbin/ifconfig", ["-v"]).output)
             let reachedTarget: Bool
             if active {
-                // Some NetworkExtension hosts briefly (and, on a few macOS
-                // releases, persistently) report Disconnected even after the
-                // packet tunnel is live. A running Shadowrocket-labelled utun
-                // is therefore an acceptable connected fallback.
-                reachedTarget = serviceState == .connected || interface != nil
+                // The labelled utun is packet-tunnel truth. scutil may claim
+                // Connected before NetworkExtension has created the interface.
+                reachedTarget = interface != nil
             } else {
                 // A disconnected scutil line is not sufficient: on some
                 // macOS/NetworkExtension combinations it is printed while a
@@ -379,8 +324,62 @@ final class ShadowrocketMonitor: ObservableObject {
         return .failure(ShadowrocketControlError.timeout("等待 Shadowrocket \(desired)超时（服务：\(service.name)）。"))
     }
 
+    private static func waitForTunnel(active: Bool, timeout: TimeInterval) -> Result<Void, Error> {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let interface = shadowrocketInterface(from: runProcess("/sbin/ifconfig", ["-v"]).output)
+            if (interface != nil) == active {
+                return .success(())
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        let desired = active ? "连接" : "断开"
+        return .failure(ShadowrocketControlError.timeout("等待 Shadowrocket \(desired)超时。"))
+    }
+
+    private static func controlSynchronously(connected: Bool, timeout: TimeInterval) -> Result<Void, Error> {
+        let action = connected ? "start" : "stop"
+        if let service = shadowrocketService(from: runScutil(["--nc", "list"]).output) {
+            let command = runScutil(["--nc", action, service.identifier])
+            if command.status == 0,
+               case .success = waitForState(active: connected, service: service, timeout: min(2, timeout)) {
+                return .success(())
+            }
+        }
+
+        // A URL-scheme-created tunnel can have a live labelled utun while its
+        // scutil service remains Disconnected. Use the CLI's hidden background
+        // control path as an idempotent fallback and verify packet-tunnel truth.
+        let fallback = runShadowrocketURL(connected ? "connect" : "disconnect")
+        guard fallback.status == 0 else {
+            let detail = fallback.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            let suffix = detail.isEmpty ? "命令退出状态 \(fallback.status)" : detail
+            let verb = connected ? "启动" : "断开"
+            return .failure(ShadowrocketControlError.commandFailed("Shadowrocket 静默\(verb)失败：\(suffix)"))
+        }
+        return waitForTunnel(active: connected, timeout: max(0.5, timeout - min(2, timeout)))
+    }
+
     private static func runScutil(_ arguments: [String]) -> ProcessResult {
         runProcess("/usr/sbin/scutil", arguments)
+    }
+
+    private static func runShadowrocketURL(_ action: String) -> ProcessResult {
+        if action == "connect" {
+            let launch = runProcess("/usr/bin/open", shadowrocketBundleArguments())
+            if launch.status != 0 {
+                return launch
+            }
+        }
+        return runProcess("/usr/bin/open", shadowrocketURLArguments(action))
+    }
+
+    static func shadowrocketBundleArguments() -> [String] {
+        ["-g", "-j", "-b", "com.liguangming.Shadowrocket"]
+    }
+
+    static func shadowrocketURLArguments(_ action: String) -> [String] {
+        ["-g", "-j", "shadowrocket://\(action)"]
     }
 
     private static func runProcess(_ executable: String, _ arguments: [String]) -> ProcessResult {

@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/net/publicsuffix"
 )
@@ -25,12 +26,39 @@ const bundleID = "com.liguangming.Shadowrocket"
 var ErrUnsupported = errors.New("Shadowrocket integration is only supported on macOS")
 
 type Controller struct {
-	open func(context.Context, ...string) error
+	open          func(context.Context, ...string) error
+	tunnelActive  func(context.Context) (bool, error)
+	serviceActive func(context.Context) (bool, error)
 }
 
-func New() Controller { return Controller{open: openWithSystem} }
+func New() Controller {
+	return Controller{
+		open: openWithSystem, tunnelActive: tunnelActiveWithSystem,
+		serviceActive: serviceActiveWithSystem,
+	}
+}
 func openWithSystem(ctx context.Context, args ...string) error {
 	return exec.CommandContext(ctx, "open", args...).Run()
+}
+
+func tunnelActiveWithSystem(ctx context.Context) (bool, error) {
+	output, err := exec.CommandContext(ctx, "/sbin/ifconfig", "-v").CombinedOutput()
+	if err != nil {
+		return false, err
+	}
+	return shadowrocketTunnelActive(string(output)), nil
+}
+
+func serviceActiveWithSystem(ctx context.Context) (bool, error) {
+	output, err := exec.CommandContext(ctx, "/usr/sbin/scutil", "--nc", "list").CombinedOutput()
+	if err != nil {
+		return false, err
+	}
+	return shadowrocketServiceActive(string(output)), nil
+}
+
+func hiddenURLArguments(action string) []string {
+	return []string{"-g", "-j", "shadowrocket://" + action}
 }
 
 // Apply waits for macOS to accept each URL. Shadowrocket exposes no reliable
@@ -55,7 +83,7 @@ func (c Controller) Apply(ctx context.Context, action, nodeFile string, updateSu
 		}
 	}
 	if updateSubscriptions {
-		if err := c.open(ctx, "-g", "shadowrocket://update-subs"); err != nil {
+		if err := c.open(ctx, hiddenURLArguments("update-subs")...); err != nil {
 			return fmt.Errorf("update Shadowrocket subscriptions: %w", err)
 		}
 	}
@@ -63,12 +91,12 @@ func (c Controller) Apply(ctx context.Context, action, nodeFile string, updateSu
 	case "off":
 		return nil
 	case "open":
-		return c.open(ctx, "-g", "-b", bundleID)
+		return c.open(ctx, "-g", "-j", "-b", bundleID)
 	case "connect":
-		if err := c.open(ctx, "-g", "-b", bundleID); err != nil {
+		if err := c.open(ctx, "-g", "-j", "-b", bundleID); err != nil {
 			return fmt.Errorf("open Shadowrocket: %w", err)
 		}
-		if err := c.open(ctx, "-g", "shadowrocket://connect"); err != nil {
+		if err := c.open(ctx, hiddenURLArguments("connect")...); err != nil {
 			return fmt.Errorf("connect Shadowrocket: %w", err)
 		}
 		return nil
@@ -81,7 +109,84 @@ func (c Controller) Disconnect(ctx context.Context) error {
 	if runtime.GOOS != "darwin" {
 		return ErrUnsupported
 	}
-	return c.open(ctx, "-g", "shadowrocket://disconnect")
+	return c.open(ctx, hiddenURLArguments("disconnect")...)
+}
+
+// IsConnected reports the packet-tunnel truth rather than relying on
+// scutil's service line, which can remain Disconnected for URL-scheme-started
+// Shadowrocket tunnels.
+func (c Controller) IsConnected(ctx context.Context) (bool, error) {
+	if runtime.GOOS != "darwin" {
+		return false, ErrUnsupported
+	}
+	if c.tunnelActive == nil {
+		return false, errors.New("Shadowrocket tunnel status reader is unavailable")
+	}
+	active, err := c.tunnelActive(ctx)
+	if err != nil || active {
+		return active, err
+	}
+	if c.serviceActive == nil {
+		return false, nil
+	}
+	return c.serviceActive(ctx)
+}
+
+// DisconnectAndWait silently pauses Shadowrocket and waits until its labelled
+// utun is gone. This prevents the HITSZ IdP from being sent to a local SOCKS
+// listener that does not exist until aTrust is ready.
+func (c Controller) DisconnectAndWait(ctx context.Context) error {
+	if err := c.Disconnect(ctx); err != nil {
+		return err
+	}
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		active, err := c.IsConnected(ctx)
+		if err != nil {
+			return fmt.Errorf("check Shadowrocket tunnel after disconnect: %w", err)
+		}
+		if !active {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for Shadowrocket disconnect: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func shadowrocketTunnelActive(ifconfigOutput string) bool {
+	var shadowrocketInterface, running bool
+	for _, rawLine := range strings.Split(ifconfigOutput, "\n") {
+		line := strings.TrimRight(rawLine, "\r")
+		if !strings.HasPrefix(line, " ") && strings.Contains(line, ": flags=") {
+			shadowrocketInterface = false
+			running = strings.Contains(line, "<UP,") && strings.Contains(line, "RUNNING")
+			continue
+		}
+		if running && strings.Contains(strings.ToLower(line), `desc:"vpn: shadowrocket"`) {
+			shadowrocketInterface = true
+		}
+		if shadowrocketInterface {
+			return true
+		}
+	}
+	return false
+}
+
+func shadowrocketServiceActive(listOutput string) bool {
+	for _, rawLine := range strings.Split(listOutput, "\n") {
+		line := strings.ToLower(rawLine)
+		if !strings.Contains(line, strings.ToLower(bundleID)) {
+			continue
+		}
+		if strings.Contains(line, "(connected)") || strings.Contains(line, "(connecting)") {
+			return true
+		}
+	}
+	return false
 }
 
 func ReadAnyTLSNodeFile(path string) (string, error) {

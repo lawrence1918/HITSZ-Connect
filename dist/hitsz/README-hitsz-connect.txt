@@ -1,4 +1,4 @@
-HITSZ Connect 1.3.1 / CLI 1.3.1-hitsz.1
+HITSZ Connect 1.3.4 / CLI 1.3.4-hitsz.1
 =========================================
 
 This is the HITSZ-specific fork of zju-connect for macOS 13+ on Apple

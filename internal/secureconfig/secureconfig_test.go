@@ -311,7 +311,7 @@ func sampleConfig() configs.Config {
 		Protocol:            "atrust",
 		ServerAddress:       "trust.hitsz.edu.cn",
 		ServerPort:          443,
-		Username:            "2025310595",
+		Username:            "synthetic-student",
 		Password:            "plain-password-that-must-be-encrypted",
 		SocksBind:           "127.0.0.1:1080",
 		SocksUser:           "socks-user",

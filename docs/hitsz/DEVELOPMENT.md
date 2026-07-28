@@ -86,7 +86,8 @@ Cookie 持久化会保留必要属性，旧 `-client-data-file` 自动兼容读�
 
 实现位于 `integration/shadowrocket`，仅支持 macOS：
 
-- `-shadowrocket off|open|connect`：在本地 SOCKS 和 relay 就绪后运行 `open` 或 Shadowrocket URL scheme。
+- `-shadowrocket off|open|connect`：认证前根据 Shadowrocket 标记的运行中 `utun` 静默暂停已有隧道，
+  在本地 SOCKS 和 relay 就绪后通过 `open -g -j` 隐藏恢复或连接。
 - `-shadowrocket-update-subs`：请求 Shadowrocket 刷新订阅；订阅 URL 始终由 Shadowrocket
   自己保存。
 - `-shadowrocket-add-node-file`：只从文件读取一条 `anytls://host:port` URI，拒绝多行或

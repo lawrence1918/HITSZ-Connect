@@ -208,8 +208,8 @@ final class AppState: ObservableObject {
 
         // A previously connected Shadowrocket profile can capture the HITSZ
         // IdP into 127.0.0.1:1080 before aTrust has created that listener.
-        // Pause it first, then let the bridge authenticate over a physical
-        // underlay and restore/start Shadowrocket after the bridge is ready.
+        // Pause it first, then let the bridge authenticate over system routing
+        // and restore/start Shadowrocket after the bridge is ready.
         shadowrocketRestoreNeeded = false
         shadowrocketRestoreInFlight = false
         shadowrocketInitiallyActive = false
@@ -249,14 +249,9 @@ final class AppState: ObservableObject {
 
     private func launchBridge(_ profile: SecureProfilePayload, attemptID: UUID) {
         guard connectionAttemptID == attemptID, phase == .connecting else { return }
-        var runtimeConfig = profile.config
-        // This is intentionally a runtime-only override. The saved profile
-        // retains the user's Shadowrocket preference, while the App owns the
-        // post-ready silent start so the Go bridge never opens a window.
-        runtimeConfig.autoDetectInterface = true
-        runtimeConfig.shadowrocket = "off"
-        runtimeConfig.shadowrocketUpdateSubs = false
-        runtimeConfig.shadowrocketDisconnectOnExit = false
+        // The App owns bootstrap routing and Shadowrocket lifecycle; the
+        // saved user preferences remain unchanged.
+        let runtimeConfig = profile.config.preparedForAppBridge()
         do {
             try bridge.start(config: runtimeConfig, clientData: profile.clientData)
             awaitingBridgeTermination = true

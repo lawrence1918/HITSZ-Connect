@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -62,7 +63,7 @@ func (s *Session) interactiveCas(loginURL string) (string, error) {
 
 	callbackURL, err := url.Parse(callback)
 	if err != nil {
-		return "", err
+		return "", errors.New("parse CAS callback URL")
 	}
 	if err := validateCASCallbackURL(callbackURL, s.baseHost); err != nil {
 		return "", err
@@ -90,7 +91,10 @@ func validateCASCallbackURL(callbackURL *url.URL, baseHost string) error {
 func (s *Session) cas(callback string) error {
 	log.Println("Perform GET /passport/v1/auth/cas")
 
-	req, _ := http.NewRequest("GET", callback, nil)
+	req, err := http.NewRequest("GET", callback, nil)
+	if err != nil {
+		return errors.New("build CAS callback request")
+	}
 	req.Header.Set("User-Agent", s.requestUserAgent())
 	req.Header.Set("x-csrf-token", s.csrfToken)
 	req.Header.Set("x-sdp-traceid", s.randSdpId())
@@ -103,7 +107,11 @@ func (s *Session) cas(callback string) error {
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return err
+		// http.Client wraps transport failures in url.Error, whose Error method
+		// includes the complete callback URL and therefore the one-time ticket.
+		// Keep the user-facing error query-free even if the underlying transport
+		// error itself happens to repeat the request URL.
+		return errors.New("CAS callback request failed")
 	}
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
@@ -117,7 +125,10 @@ func (s *Session) cas(callback string) error {
 	}
 
 	body, _ := io.ReadAll(resp.Body)
-	log.DebugPrintf("Received cas data: %s", string(body))
+	// Redirect response bodies can repeat their Location target, including
+	// query-encoded portal data. Log only the size so neither CAS ticket can be
+	// exposed when debug logging is enabled.
+	log.DebugPrintf("Received CAS callback response: %d bytes", len(body))
 	s.ticket = ticket
 	return nil
 }

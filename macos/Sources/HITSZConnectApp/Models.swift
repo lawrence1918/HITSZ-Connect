@@ -246,7 +246,7 @@ struct BridgeConnectionConfig: Codable, Equatable {
     }
 
     var autoDetectInterface: Bool {
-        get { bool("autoDetectInterface", default: true) }
+        get { bool("autoDetectInterface", default: false) }
         set { values["autoDetectInterface"] = .bool(newValue) }
     }
 
@@ -268,6 +268,19 @@ struct BridgeConnectionConfig: Codable, Equatable {
     var shadowrocketUpdateSubs: Bool {
         get { bool("shadowrocketUpdateSubs") }
         set { values["shadowrocketUpdateSubs"] = .bool(newValue) }
+    }
+
+    func preparedForAppBridge() -> BridgeConnectionConfig {
+        var runtime = self
+        // The App pauses Shadowrocket before starting aTrust. Normalize the
+        // short-lived 1.3.1 default as well as newly created profiles back to
+        // system routing; an explicit bindInterface remains authoritative in
+        // the Go underlay dialer.
+        runtime.autoDetectInterface = false
+        runtime.shadowrocket = "off"
+        runtime.shadowrocketUpdateSubs = false
+        runtime.shadowrocketDisconnectOnExit = false
+        return runtime
     }
 
     private func string(_ key: String, default defaultValue: String = "") -> String {
@@ -331,7 +344,7 @@ struct BridgeConnectionConfig: Codable, Equatable {
         "fakeIP": .bool(false),
         "debugDump": .bool(false),
         "bindInterface": .string(""),
-        "autoDetectInterface": .bool(true),
+        "autoDetectInterface": .bool(false),
         "profile": .string("hitsz"),
         "noSystemDNSMutation": .bool(true),
         "mfaMethod": .string("otp"),

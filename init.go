@@ -22,7 +22,7 @@ var appBridge bool
 var secureConfigID string
 var listSecureConfigs bool
 
-const hitszConnectVersion = "1.3.1-hitsz.1"
+const hitszConnectVersion = "1.3.4-hitsz.1"
 
 func getTOMLVal[T int | uint64 | string | bool](valPointer *T, defaultVal T) T {
 	if valPointer == nil {
@@ -154,6 +154,14 @@ func parseTOMLConfig(configFile string, conf *configs.Config) error {
 
 func applyProfile(conf *configs.Config) error {
 	return connectionprofile.Apply(conf)
+}
+
+func applySecureConfigProfile(conf *configs.Config) error {
+	return connectionprofile.ApplySecureConfig(conf)
+}
+
+func validateFileSourcePaths(conf configs.Config) error {
+	return connectionprofile.ValidateFileSourcePaths(conf)
 }
 
 func init() {

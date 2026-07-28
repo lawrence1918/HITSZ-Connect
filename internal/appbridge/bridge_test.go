@@ -31,7 +31,7 @@ func TestReadStartAliasesAndClientData(t *testing.T) {
 	}
 }
 
-func TestPrepareRuntimeConfigDisablesShadowrocketURLControl(t *testing.T) {
+func TestPrepareRuntimeConfigKeepsBrowserAuthenticationInteractive(t *testing.T) {
 	config := configs.Config{
 		Username:                     "student",
 		Password:                     "password",
@@ -54,7 +54,7 @@ func TestPrepareRuntimeConfigDisablesShadowrocketURLControl(t *testing.T) {
 	if config.ClientDataFile != "" || config.MFAOTPSecretFile != "" {
 		t.Fatal("bridge retained a runtime secret file path")
 	}
-	if !config.NonInteractive || config.DebugDump {
+	if config.NonInteractive || config.DebugDump {
 		t.Fatalf("bridge safety flags = NonInteractive:%v DebugDump:%v", config.NonInteractive, config.DebugDump)
 	}
 	if config.Username != "student" || config.Password != "password" || config.MFAOTPSecret != "otp-secret" {

@@ -42,6 +42,10 @@ var hitszIDPHostAllowlist = map[string]struct{}{
 	"ids-hit-edu-cn-s.hitsz.edu.cn": {},
 }
 
+// ErrHITSZCaptchaRequired is returned in non-interactive mode when the IdP
+// requires its slider verification before accepting a credential POST.
+var ErrHITSZCaptchaRequired = errors.New("HITSZ unified authentication requires interactive slider verification; retry without non-interactive mode")
+
 type HITSZSSOLogin struct {
 	Username         string
 	Password         string
@@ -69,7 +73,7 @@ func (s *Session) loginHITSZSSO(loginURL string, opts HITSZSSOLogin) error {
 	s.hitszBrowserMode = true
 	start, err := url.Parse(loginURL)
 	if err != nil {
-		return fmt.Errorf("parse HITSZ CAS URL: %w", err)
+		return errors.New("parse HITSZ CAS URL")
 	}
 	if !start.IsAbs() {
 		base, _ := url.Parse(s.baseURL + "/")
@@ -85,7 +89,7 @@ func (s *Session) loginHITSZSSO(loginURL string, opts HITSZSSOLogin) error {
 	}
 	idpLogin, err := resp.Location()
 	if err != nil {
-		return fmt.Errorf("HITSZ CAS redirect has no location: %w", err)
+		return errors.New("HITSZ CAS redirect has no valid location")
 	}
 	service := idpLogin.Query().Get("service")
 	if service == "" {
@@ -123,7 +127,7 @@ func (s *Session) hitszExistingSession(loginURL, service string) (string, bool, 
 	}
 	loc, err := resp.Location()
 	if err != nil {
-		return "", false, err
+		return "", false, errors.New("HITSZ existing-session redirect has no valid location")
 	}
 	if isHITSZServiceCallback(loc.String(), service) {
 		return loc.String(), true, nil
@@ -154,6 +158,22 @@ func (s *Session) hitszCredentialLogin(loginURL, origin, service string, opts HI
 	if err := s.hitszBrowserFingerprint(origin, loginURL); err != nil {
 		return "", err
 	}
+	// captchaSwitch=2 on the HITSZ login page means an explicit isNeed=true
+	// requires the official slider to be verified in this same cookie session.
+	// A normal browser may skip the login page because it has unrelated CAS
+	// cookies, so opening ids.hit.edu.cn directly cannot clear this session.
+	if required, checkErr := s.hitszCaptchaRequired(origin, loginURL, opts.Username); checkErr == nil && required {
+		if opts.NonInteractive {
+			return "", ErrHITSZCaptchaRequired
+		}
+		solver := s.hitszSliderCaptchaSolver
+		if solver == nil {
+			solver = s.hitszSolveSliderCaptcha
+		}
+		if err := solver(origin, loginURL); err != nil {
+			return "", fmt.Errorf("complete HITSZ slider verification: %w", err)
+		}
+	}
 	password, err := encryptHITSZPassword(opts.Password, salt)
 	if err != nil {
 		return "", err
@@ -165,7 +185,7 @@ func (s *Session) hitszCredentialLogin(loginURL, origin, service string, opts HI
 
 	req, err := http.NewRequest(http.MethodPost, loginURL, strings.NewReader(form.Encode()))
 	if err != nil {
-		return "", err
+		return "", errors.New("build HITSZ credential request")
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Origin", origin)
@@ -178,7 +198,7 @@ func (s *Session) hitszCredentialLogin(loginURL, origin, service string, opts HI
 	if postResp.StatusCode == http.StatusFound || postResp.StatusCode == http.StatusSeeOther {
 		loc, err := postResp.Location()
 		if err != nil {
-			return "", err
+			return "", errors.New("HITSZ credential redirect has no valid location")
 		}
 		if isHITSZServiceCallback(loc.String(), service) {
 			return loc.String(), nil
@@ -186,9 +206,12 @@ func (s *Session) hitszCredentialLogin(loginURL, origin, service string, opts HI
 		if isHITSZMFAURL(loc.String()) {
 			return s.hitszCompleteMFA(origin, service, opts, loc.String(), nil)
 		}
-		return "", fmt.Errorf("unexpected HITSZ login redirect: %s", loc)
+		return "", unexpectedHITSZLoginRedirect(loc)
 	}
 	page, _ := io.ReadAll(postResp.Body)
+	if postResp.StatusCode == http.StatusUnauthorized {
+		return "", errors.New("HITSZ login was rejected with HTTP 401 (credentials invalid, browser CAPTCHA verification required, or account risk control active)")
+	}
 	if isHITSZMFAURL(postResp.Request.URL.String()) || isHITSZMFAPage(page) {
 		return s.hitszCompleteMFA(origin, service, opts, postResp.Request.URL.String(), page)
 	}
@@ -288,7 +311,7 @@ func (s *Session) hitszCompleteMFA(origin, service string, opts HITSZSSOLogin, p
 	login := origin + "/authserver/login?" + url.Values{"service": {service}}.Encode()
 	req, err := http.NewRequest(http.MethodGet, login, nil)
 	if err != nil {
-		return "", err
+		return "", errors.New("build HITSZ post-MFA callback request")
 	}
 	req.Header.Set("Referer", pageURL)
 	req.Header.Set("User-Agent", hitszSSOUserAgent)
@@ -309,7 +332,7 @@ func (s *Session) hitszCompleteMFA(origin, service string, opts HITSZSSOLogin, p
 	}
 	loc, err := resp.Location()
 	if err != nil {
-		return "", err
+		return "", errors.New("HITSZ MFA callback has no valid location")
 	}
 	if !isHITSZServiceCallback(loc.String(), service) {
 		// CAS tickets are carried in the Location query.  Do not expose them in
@@ -353,7 +376,7 @@ func normalizedHITSZHTTPSHost(u *url.URL) (string, bool) {
 func validateHITSZCASService(service, baseHost, domain string) error {
 	target, err := url.Parse(service)
 	if err != nil {
-		return fmt.Errorf("parse HITSZ CAS service: %w", err)
+		return errors.New("parse HITSZ CAS service")
 	}
 	if !strings.EqualFold(target.Scheme, "https") || target.User != nil || !sameHTTPSHost(target.Host, baseHost) {
 		return errors.New("HITSZ CAS service does not target this aTrust HTTPS host")
@@ -461,7 +484,7 @@ func (s *Session) hitszMFAFormResponse(origin, service, path string, values url.
 	}
 	req, err := http.NewRequest(http.MethodPost, u.String(), strings.NewReader(values.Encode()))
 	if err != nil {
-		return nil, err
+		return nil, errors.New("build HITSZ MFA request")
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded;charset=utf-8")
 	req.Header.Set("Accept", "application/json, text/javascript, */*; q=0.01")
@@ -500,7 +523,7 @@ func (s *Session) hitszMFASubmit(origin, service string, values url.Values) (str
 	u.RawQuery = q.Encode()
 	req, err := http.NewRequest(http.MethodPost, u.String(), strings.NewReader(values.Encode()))
 	if err != nil {
-		return "", nil, err
+		return "", nil, errors.New("build HITSZ MFA submit request")
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded;charset=utf-8")
 	req.Header.Set("Accept", "application/json, text/javascript, */*; q=0.01")
@@ -545,7 +568,7 @@ func (s *Session) hitszBrowserFingerprint(origin, loginURL string) error {
 	u.RawQuery = q.Encode()
 	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
 	if err != nil {
-		return err
+		return errors.New("build HITSZ browser fingerprint request")
 	}
 	req.Header.Set("Accept", "application/json, text/javascript, */*; q=0.01")
 	req.Header.Set("Referer", loginURL)
@@ -575,6 +598,55 @@ func (s *Session) hitszBrowserFingerprint(origin, loginURL string) error {
 	return errors.New("HITSZ browser fingerprint cookie was not returned")
 }
 
+func (s *Session) hitszCaptchaRequired(origin, loginURL, username string) (bool, error) {
+	u, err := url.Parse(origin + "/authserver/checkNeedCaptcha.htl")
+	if err != nil {
+		return false, errors.New("build HITSZ CAPTCHA preflight request")
+	}
+	q := u.Query()
+	q.Set("username", username)
+	q.Set("_", strconv.FormatInt(time.Now().UnixMilli(), 10))
+	u.RawQuery = q.Encode()
+	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	if err != nil {
+		return false, errors.New("build HITSZ CAPTCHA preflight request")
+	}
+	req.Header.Set("Accept", "application/json, text/javascript, */*; q=0.01")
+	req.Header.Set("Referer", loginURL)
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	resp, err := s.doNoRedirectRequest(req)
+	if err != nil {
+		// Do not wrap net/url errors here: their URL contains the username.
+		return false, errors.New("HITSZ CAPTCHA preflight request failed")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return false, fmt.Errorf("HITSZ CAPTCHA preflight failed with status %s", resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		return false, errors.New("read HITSZ CAPTCHA preflight response")
+	}
+	var result struct {
+		IsNeed json.RawMessage `json:"isNeed"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil || len(result.IsNeed) == 0 {
+		return false, errors.New("parse HITSZ CAPTCHA preflight response")
+	}
+	var required bool
+	if err := json.Unmarshal(result.IsNeed, &required); err == nil {
+		return required, nil
+	}
+	var text string
+	if err := json.Unmarshal(result.IsNeed, &text); err == nil {
+		required, err = strconv.ParseBool(strings.TrimSpace(text))
+		if err == nil {
+			return required, nil
+		}
+	}
+	return false, errors.New("parse HITSZ CAPTCHA preflight response")
+}
+
 func (s *Session) hitszMFAServerTime(origin, service string) (time.Time, error) {
 	u, _ := url.Parse(origin + "/authserver/systemTime")
 	q := u.Query()
@@ -582,7 +654,7 @@ func (s *Session) hitszMFAServerTime(origin, service string) (time.Time, error) 
 	u.RawQuery = q.Encode()
 	req, err := http.NewRequest(http.MethodPost, u.String(), nil)
 	if err != nil {
-		return time.Time{}, err
+		return time.Time{}, errors.New("build HITSZ MFA server-time request")
 	}
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Origin", origin)
@@ -620,7 +692,7 @@ func (s *Session) hitszMFAServerTime(origin, service string) (time.Time, error) 
 func (s *Session) doNoRedirect(method, rawURL string, body io.Reader, headers map[string]string) (*http.Response, error) {
 	req, err := http.NewRequest(method, rawURL, body)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("build HITSZ SSO request")
 	}
 	for key, value := range headers {
 		req.Header.Set(key, value)
@@ -635,7 +707,13 @@ func (s *Session) doNoRedirectRequest(req *http.Request) (*http.Response, error)
 	previous := s.client.CheckRedirect
 	s.client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 	defer func() { s.client.CheckRedirect = previous }()
-	return s.client.Do(req)
+	resp, err := s.client.Do(req)
+	if err != nil {
+		// net/http wraps transport errors in url.Error, whose text includes the
+		// complete request URL (and therefore may include username or tickets).
+		return nil, errors.New("HITSZ SSO request failed")
+	}
+	return resp, nil
 }
 
 func (s *Session) doUntilHITSZService(req *http.Request, service string) (*http.Response, error) {
@@ -652,7 +730,11 @@ func (s *Session) doUntilHITSZService(req *http.Request, service string) (*http.
 		s.client.CheckRedirect = previous
 		s.hitszRedirectTrace = trace
 	}()
-	return s.client.Do(req)
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, errors.New("HITSZ SSO redirect request failed")
+	}
+	return resp, nil
 }
 
 func redactedHITSZURL(u *url.URL) string {
@@ -662,21 +744,43 @@ func redactedHITSZURL(u *url.URL) string {
 	return u.Scheme + "://" + u.Host + u.EscapedPath()
 }
 
+func unexpectedHITSZLoginRedirect(u *url.URL) error {
+	return fmt.Errorf("unexpected HITSZ login redirect: %s", redactedHITSZURL(u))
+}
+
 func parseHITSZLoginForm(page []byte) (url.Values, string, error) {
 	root, err := html.Parse(bytes.NewReader(page))
 	if err != nil {
 		return nil, "", err
+	}
+	var passwordForm *html.Node
+	var findForm func(*html.Node)
+	findForm = func(n *html.Node) {
+		if passwordForm != nil {
+			return
+		}
+		if n.Type == html.ElementNode && n.Data == "form" && htmlAttr(n, "id") == "pwdFromId" {
+			passwordForm = n
+			return
+		}
+		for child := n.FirstChild; child != nil; child = child.NextSibling {
+			findForm(child)
+		}
+	}
+	findForm(root)
+	if passwordForm == nil {
+		return nil, "", errors.New("HITSZ login page has no password form")
 	}
 	values := url.Values{}
 	salt := ""
 	var walk func(*html.Node)
 	walk = func(n *html.Node) {
 		if n.Type == html.ElementNode && n.Data == "input" {
-			name, value, id := htmlAttr(n, "name"), htmlAttr(n, "value"), htmlAttr(n, "id")
-			if name != "" {
+			name, value, id, inputType := htmlAttr(n, "name"), htmlAttr(n, "value"), htmlAttr(n, "id"), htmlAttr(n, "type")
+			if strings.EqualFold(strings.TrimSpace(inputType), "hidden") && name != "" {
 				values.Set(name, value)
 			}
-			if name == "pwdEncryptSalt" || id == "pwdEncryptSalt" {
+			if id == "pwdEncryptSalt" || name == "pwdEncryptSalt" {
 				salt = value
 			}
 		}
@@ -684,7 +788,7 @@ func parseHITSZLoginForm(page []byte) (url.Values, string, error) {
 			walk(c)
 		}
 	}
-	walk(root)
+	walk(passwordForm)
 	if salt == "" {
 		return nil, "", errors.New("HITSZ login page has no pwdEncryptSalt")
 	}

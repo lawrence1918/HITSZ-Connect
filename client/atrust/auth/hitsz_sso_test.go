@@ -15,14 +15,293 @@ import (
 )
 
 func TestParseHITSZLoginFormAndMFATabs(t *testing.T) {
-	page := []byte(`<html><form id="pwdFromId"><input type="hidden" name="execution" value="e2s1"><input id="pwdEncryptSalt" type="hidden" value="whBSMLc9WmoD31SN"></form><div id="tab_13" data-type="13"></div><div id="tab_3" data-type="3"></div></html>`)
+	page := []byte(`<html>
+		<form id="qrLoginForm"><input type="hidden" name="uuid" value="trap"><input type="hidden" name="execution" value="wrong-before"></form>
+		<form id="pwdFromId">
+			<input type="text" name="username" value="trap-user">
+			<input type="password" name="passwordText" value="trap-password">
+			<input type="hidden" name="cllt" value="userNameLogin">
+			<input type="hidden" name="execution" value="e2s1">
+			<input id="pwdEncryptSalt" type="hidden" value="whBSMLc9WmoD31SN">
+		</form>
+		<form id="phoneFromId"><input type="hidden" name="dynamicCode" value="trap"><input type="hidden" name="execution" value="wrong-after"></form>
+		<div id="tab_13" data-type="13"></div><div id="tab_3" data-type="3"></div>
+	</html>`)
 	values, salt, err := parseHITSZLoginForm(page)
-	if err != nil || salt != "whBSMLc9WmoD31SN" || values.Get("execution") != "e2s1" {
+	if err != nil || salt != "whBSMLc9WmoD31SN" || values.Get("execution") != "e2s1" || values.Get("cllt") != "userNameLogin" {
 		t.Fatalf("unexpected parsed HITSZ form: values=%v salt=%q err=%v", values, salt, err)
+	}
+	for _, trap := range []string{"uuid", "username", "passwordText", "dynamicCode"} {
+		if _, ok := values[trap]; ok {
+			t.Fatalf("password form parser retained unrelated field %q", trap)
+		}
 	}
 	methods := parseHITSZMFAMethods(page)
 	if len(methods) != 2 || methods[0].name != hitszMFAApp || methods[1].name != hitszMFASMS {
 		t.Fatalf("unexpected MFA methods: %#v", methods)
+	}
+}
+
+func TestHITSZCredentialLoginStopsBeforeRequiredSliderInNonInteractiveMode(t *testing.T) {
+	postedCredentials := false
+	var server *httptest.Server
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/authserver/login":
+			if r.Method == http.MethodPost {
+				postedCredentials = true
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			_, _ = w.Write([]byte(`<form id="pwdFromId"><input type="hidden" name="execution" value="e1s1"><input id="pwdEncryptSalt" type="hidden" value="whBSMLc9WmoD31SN"></form>`))
+		case "/authserver/bfp/info":
+			http.SetCookie(w, &http.Cookie{Name: "MULTIFACTOR_BROWSER_FINGERPRINT", Value: "synthetic", Path: "/"})
+			_, _ = w.Write([]byte(`{}`))
+		case "/authserver/checkNeedCaptcha.htl":
+			if got := r.URL.Query().Get("username"); got != "synthetic-student" {
+				t.Errorf("CAPTCHA preflight username=%q", got)
+			}
+			if got := r.Header.Get("X-Requested-With"); got != "XMLHttpRequest" {
+				t.Errorf("CAPTCHA preflight X-Requested-With=%q", got)
+			}
+			_, _ = w.Write([]byte(`{"isNeed":true}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := server.Client()
+	client.Jar = jar
+	session := &Session{client: client}
+	service := server.URL + "/service"
+	_, err = session.hitszCredentialLogin(
+		server.URL+"/authserver/login?service="+url.QueryEscape(service),
+		server.URL,
+		service,
+		HITSZSSOLogin{Username: "synthetic-student", Password: "synthetic-password", NonInteractive: true},
+	)
+	if !errors.Is(err, ErrHITSZCaptchaRequired) {
+		t.Fatalf("credential login error = %v, want ErrHITSZCaptchaRequired", err)
+	}
+	if postedCredentials {
+		t.Fatal("credential POST was sent despite required browser CAPTCHA")
+	}
+}
+
+func TestHITSZCredentialLoginCompletesRequiredSliderBeforePosting(t *testing.T) {
+	postedCredentials := false
+	sliderCalls := 0
+	var server *httptest.Server
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/authserver/login":
+			if r.Method == http.MethodGet {
+				_, _ = w.Write([]byte(`<form id="pwdFromId">
+					<input type="hidden" name="execution" value="e1s1">
+					<input type="hidden" name="pwdEncryptSalt" value="whBSMLc9WmoD31SN">
+				</form>`))
+				return
+			}
+			postedCredentials = true
+			http.Redirect(w, r, server.URL+"/service?ticket=ST-synthetic", http.StatusFound)
+		case "/authserver/bfp/info":
+			http.SetCookie(w, &http.Cookie{Name: "MULTIFACTOR_BROWSER_FINGERPRINT", Value: "synthetic", Path: "/"})
+			_, _ = w.Write([]byte(`{}`))
+		case "/authserver/checkNeedCaptcha.htl":
+			_, _ = w.Write([]byte(`{"isNeed":true}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := server.Client()
+	client.Jar = jar
+	service := server.URL + "/service"
+	loginURL := server.URL + "/authserver/login?service=" + url.QueryEscape(service)
+	session := &Session{
+		client: client,
+		hitszSliderCaptchaSolver: func(origin, gotLoginURL string) error {
+			sliderCalls++
+			if origin != server.URL || gotLoginURL != loginURL {
+				t.Errorf("slider solver origin=%q loginURL=%q", origin, gotLoginURL)
+			}
+			return nil
+		},
+	}
+	callback, err := session.hitszCredentialLogin(loginURL, server.URL, service, HITSZSSOLogin{
+		Username: "synthetic-student", Password: "synthetic-password",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sliderCalls != 1 || !postedCredentials {
+		t.Fatalf("slider calls=%d posted=%t", sliderCalls, postedCredentials)
+	}
+	if callback != server.URL+"/service?ticket=ST-synthetic" {
+		t.Fatalf("callback=%q", callback)
+	}
+}
+
+func TestHITSZCredentialLoginBuildsScopedBrowserRequest(t *testing.T) {
+	postedCredentials := false
+	var server *httptest.Server
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/authserver/login":
+			if r.Method == http.MethodGet {
+				_, _ = w.Write([]byte(`<form id="qrLoginForm"><input type="hidden" name="uuid" value="trap"></form>
+					<form id="pwdFromId">
+					<input type="text" name="username" value="trap-user">
+					<input type="password" name="passwordText" value="trap-password">
+					<input type="hidden" name="_eventId" value="submit">
+					<input type="hidden" name="cllt" value="userNameLogin">
+					<input type="hidden" name="dllt" value="generalLogin">
+					<input type="hidden" name="execution" value="e1s1">
+					<input type="hidden" name="password" value="">
+					<input type="hidden" name="pwdEncryptSalt" value="whBSMLc9WmoD31SN">
+					</form>`))
+				return
+			}
+			postedCredentials = true
+			if err := r.ParseForm(); err != nil {
+				t.Errorf("parse credential form: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			for key, want := range map[string]string{
+				"username": "synthetic-student", "_eventId": "submit", "cllt": "userNameLogin",
+				"dllt": "generalLogin", "execution": "e1s1", "captcha": "", "rememberMe": "true",
+			} {
+				if got := r.Form.Get(key); got != want {
+					t.Errorf("credential form %s=%q, want %q", key, got, want)
+				}
+			}
+			if encrypted := r.Form.Get("password"); encrypted == "" || encrypted == "synthetic-password" {
+				t.Error("password was not encrypted")
+			}
+			for _, trap := range []string{"uuid", "passwordText"} {
+				if _, ok := r.Form[trap]; ok {
+					t.Errorf("credential form retained unrelated field %q", trap)
+				}
+			}
+			if got := r.Header.Get("Origin"); got != server.URL {
+				t.Errorf("Origin=%q", got)
+			}
+			if got := r.Header.Get("Referer"); !strings.HasPrefix(got, server.URL+"/authserver/login?service=") {
+				t.Errorf("Referer=%q", got)
+			}
+			if got := r.Header.Get("User-Agent"); got != hitszSSOUserAgent {
+				t.Errorf("User-Agent=%q", got)
+			}
+			if cookie, err := r.Cookie("MULTIFACTOR_BROWSER_FINGERPRINT"); err != nil || cookie.Value != "synthetic" {
+				t.Errorf("fingerprint cookie=%v err=%v", cookie, err)
+			}
+			http.Redirect(w, r, server.URL+"/service?ticket=ST-synthetic", http.StatusFound)
+		case "/authserver/bfp/info":
+			http.SetCookie(w, &http.Cookie{Name: "MULTIFACTOR_BROWSER_FINGERPRINT", Value: "synthetic", Path: "/"})
+			_, _ = w.Write([]byte(`{}`))
+		case "/authserver/checkNeedCaptcha.htl":
+			_, _ = w.Write([]byte(`{"isNeed":"false"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := server.Client()
+	client.Jar = jar
+	session := &Session{client: client}
+	service := server.URL + "/service"
+	loginURL := server.URL + "/authserver/login?service=" + url.QueryEscape(service)
+	callback, err := session.hitszCredentialLogin(loginURL, server.URL, service, HITSZSSOLogin{
+		Username: "synthetic-student", Password: "synthetic-password", RememberSSO: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !postedCredentials || callback != server.URL+"/service?ticket=ST-synthetic" {
+		t.Fatalf("posted=%t callback=%q", postedCredentials, callback)
+	}
+}
+
+func TestUnexpectedHITSZLoginRedirectRedactsTicket(t *testing.T) {
+	location, err := url.Parse("https://trust.hitsz.edu.cn/unexpected?ticket=ST-sensitive&username=synthetic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := unexpectedHITSZLoginRedirect(location).Error()
+	if strings.Contains(message, "ST-sensitive") || strings.Contains(message, "username") {
+		t.Fatalf("redirect error leaked query: %s", message)
+	}
+	if !strings.Contains(message, "https://trust.hitsz.edu.cn/unexpected") {
+		t.Fatalf("redirect error lost redacted location: %s", message)
+	}
+}
+
+func TestHITSZSSOTransportErrorRedactsRequestQuery(t *testing.T) {
+	const syntheticTicket = "ST-synthetic-transport-ticket"
+	const syntheticUsername = "synthetic-transport-username"
+	rawURL := "https://ids-hit-edu-cn-s.hitsz.edu.cn/authserver/login?ticket=" + syntheticTicket + "&username=" + syntheticUsername
+	session := &Session{client: &http.Client{Transport: casRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return nil, errors.New("synthetic transport failure for " + request.URL.String())
+	})}}
+
+	_, err := session.doNoRedirect(http.MethodGet, rawURL, nil, nil)
+	if err == nil {
+		t.Fatal("HITSZ SSO request unexpectedly succeeded")
+	}
+	if got := err.Error(); got != "HITSZ SSO request failed" {
+		t.Fatalf("HITSZ SSO transport error was not sanitized: %q", got)
+	}
+	for _, sensitive := range []string{syntheticTicket, syntheticUsername, "ticket=", "username="} {
+		if strings.Contains(err.Error(), sensitive) {
+			t.Fatalf("HITSZ SSO transport error exposed request query: %q", err)
+		}
+	}
+}
+
+func TestHITSZLocationParseErrorRedactsHeaderQuery(t *testing.T) {
+	const syntheticTicket = "ST-synthetic-location-ticket"
+	const syntheticUsername = "synthetic-location-username"
+	malformedLocation := "https://trust.synthetic.example/%zz?ticket=" + syntheticTicket + "&username=" + syntheticUsername
+	session := &Session{client: &http.Client{Transport: casRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusFound,
+			Status:     "302 Found",
+			Header:     http.Header{"Location": []string{malformedLocation}},
+			Body:       http.NoBody,
+			Request:    request,
+		}, nil
+	})}}
+
+	_, _, err := session.hitszExistingSession("https://ids-hit-edu-cn-s.hitsz.edu.cn/authserver/login", "https://trust.synthetic.example/service")
+	if err == nil {
+		t.Fatal("malformed HITSZ Location unexpectedly succeeded")
+	}
+	// net/http may reject the malformed Location while processing the 302,
+	// before hitszExistingSession calls Response.Location itself. Both paths
+	// must collapse to a query-free static error.
+	if got := err.Error(); got != "HITSZ SSO request failed" && got != "HITSZ existing-session redirect has no valid location" {
+		t.Fatalf("HITSZ Location parse error was not sanitized: %q", got)
+	}
+	for _, sensitive := range []string{syntheticTicket, syntheticUsername, "ticket=", "username="} {
+		if strings.Contains(err.Error(), sensitive) {
+			t.Fatalf("HITSZ Location parse error exposed header query: %q", err)
+		}
 	}
 }
 

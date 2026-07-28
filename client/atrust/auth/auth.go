@@ -114,6 +114,11 @@ type Session struct {
 	// HITSZ uses browser-shaped headers and query parameters for aTrust HTTP
 	// requests. This is transient session state and is never persisted.
 	hitszBrowserMode bool
+	// Tests can replace the interactive HITSZ slider without opening a browser.
+	// Production sessions leave this nil and use the localhost browser solver.
+	hitszSliderCaptchaSolver func(origin, loginURL string) error
+	hitszSliderBrowserOpener func(string)
+	hitszSliderTimeout       time.Duration
 
 	response   map[string]json.RawMessage
 	cookieURLs map[string]*url.URL

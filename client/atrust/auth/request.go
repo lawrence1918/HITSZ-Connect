@@ -3,6 +3,7 @@ package auth
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -475,7 +476,7 @@ func (s *Session) onlineInfo() (string, error) {
 		_ = Body.Close()
 	}(resp.Body)
 	body, _ := io.ReadAll(resp.Body)
-	log.DebugPrintf("Received online info: %s", string(body))
+	log.DebugPrintf("Received online info response: %d bytes", len(body))
 
 	var re struct {
 		Code int `json:"code"`
@@ -488,10 +489,10 @@ func (s *Session) onlineInfo() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	log.DebugPrintf("Parsed online info: %+v", re)
+	log.DebugPrintf("Parsed online info: code=%d, username present=%t", re.Code, re.Data.Username != "")
 
 	if re.Code != 0 {
-		log.Printf("onlineInfo failed with code %d: %s", re.Code, string(body))
+		log.Printf("onlineInfo failed with code %d", re.Code)
 		return "", fmt.Errorf("onlineInfo failed with code %d", re.Code)
 	}
 
@@ -560,9 +561,10 @@ func (s *Session) checkCode() ([]byte, error) {
 func parsePortalTicketFromRedirect(redirectLocation, baseHost string) (string, error) {
 	redirectURL, err := url.Parse(redirectLocation)
 	if err != nil {
-		return "", err
+		// url.Parse errors include their raw input, which may contain portal data
+		// or a one-time ticket. Keep malformed redirects out of logs as well.
+		return "", errors.New("invalid redirect url")
 	}
-	log.DebugPrintf("Received redirect: %s", redirectURL.String())
 	if redirectURL.Scheme != "https" {
 		return "", fmt.Errorf("invalid redirect url: scheme not https")
 	}
@@ -572,6 +574,7 @@ func parsePortalTicketFromRedirect(redirectLocation, baseHost string) (string, e
 	if redirectURL.Path != "/portal/shortcut.html" {
 		return "", fmt.Errorf("invalid redirect url: path not match")
 	}
+	log.DebugPrintf("Received redirect: %s://%s%s (query redacted)", redirectURL.Scheme, redirectURL.Host, redirectURL.EscapedPath())
 	queries := redirectURL.Query()
 	if queries.Get("data") == "" {
 		return "", fmt.Errorf("invalid redirect url: data not found")
@@ -583,9 +586,9 @@ func parsePortalTicketFromRedirect(redirectLocation, baseHost string) (string, e
 	if err := json.Unmarshal([]byte(queries.Get("data")), &tk); err != nil {
 		return "", err
 	}
-	log.DebugPrintf("Parsed portal data: %+v", tk)
 	if tk.Ticket == "" {
 		return "", fmt.Errorf("invalid portal data: ticket not found")
 	}
+	log.DebugPrintln("Parsed portal data: ticket present")
 	return tk.Ticket, nil
 }

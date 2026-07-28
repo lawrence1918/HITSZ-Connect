@@ -1,7 +1,7 @@
 # HITSZ Connect macOS App 交付目录
 
-本目录包含 **HITSZ Connect 1.3.1** 的 Apple Silicon App，支持 macOS 13 及以上版本。App bundle
-内置 **HITSZ Connect CLI 1.3.1-hitsz.1**：SwiftUI 前端负责配置、MFA 交互和状态展示，实际的
+本目录包含 **HITSZ Connect 1.3.4** 的 Apple Silicon App，支持 macOS 13 及以上版本。App bundle
+内置 **HITSZ Connect CLI 1.3.4-hitsz.1**：SwiftUI 前端负责配置、MFA 交互和状态展示，实际的
 HITSZ 认证、aTrust 通道、本地代理及 DNS relay 由
 `HITSZ Connect.app/Contents/Resources/hitsz-connect` 提供。
 
@@ -28,13 +28,17 @@ xattr -dr com.apple.quarantine "/Applications/HITSZ Connect.app"
 使用 App 前，将
 `dist/hitsz/shadowrocket/Shadowrocket-HITSZ-DNS-relay-fragment.conf` 合并到 Shadowrocket 活动
 配置，并把其中规则放在通用私网 `DIRECT` 和 `FINAL` 之前。App 可以按设置连接或断开
-Shadowrocket，但不会替你导入、合并或激活配置。连接控制使用 macOS 的 `scutil --nc` 系统 VPN
-服务：aTrust 认证前静默暂停已有 Shadowrocket，本地代理就绪后再静默恢复，不会打开其窗口。
+Shadowrocket，但不会替你导入、合并或激活配置。连接控制优先使用 macOS 的 `scutil --nc` 系统
+VPN 服务；若该状态与实际 Shadowrocket `utun` 不一致，则使用 `open -g -j` 隐藏后台兜底。aTrust
+认证前静默暂停已有 Shadowrocket，本地代理就绪后再恢复，不会打开或置前其窗口。
 
 1. 打开 App，新建配置并填写学号或手机号、统一认证密码和 MFA 方式；OTP 方式还需填写 OTP 种子。
 2. 按需启用“启动 aTrust 后连接 Shadowrocket”，保存并选中配置。
 3. 点击“发起连接”；App/短信 MFA 会在界面中请求动态码，OTP 则在本机生成。
 4. 在主窗口或菜单栏查看 aTrust、监听端口、Shadowrocket 和流量状态；使用“关闭连接”干净停止。
+
+若统一认证要求滑块，App 会在默认浏览器打开仅监听 `127.0.0.1` 的临时拼图页；完成后自动继续。
+直接打开统一认证主页可能复用浏览器的既有 CAS 会话，不能替代这个验证页。
 
 配置固定保存为 `~/Documents/hitsz-connect/*.hcenc`。目录权限为 `0700`，文件权限为 `0600`；内容
 使用 AES-256-GCM 加密，每个配置的独立密钥保存在当前用户的 macOS 钥匙串。单独复制 `.hcenc`

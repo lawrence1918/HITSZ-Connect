@@ -57,8 +57,11 @@ func PrepareRuntimeConfig(config *configs.Config) {
 	config.ShadowrocketDisconnectOnExit = false
 
 	// stdin belongs to the bridge dispatcher. MFA codes arrive as explicit
-	// mfaCode commands rather than terminal prompts.
-	config.NonInteractive = true
+	// mfaCode commands rather than terminal prompts. Do not set
+	// NonInteractive here: HITSZ's slider CAPTCHA is also an interactive
+	// authentication step, but it is completed in a tokenized localhost
+	// browser page and never reads bridge stdin.
+	config.NonInteractive = false
 	config.DebugDump = false
 }
 

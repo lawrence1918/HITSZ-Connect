@@ -53,9 +53,9 @@ Shadowrocket 的通用私网 `DIRECT` 规则和 `FINAL` 之前。不要把整个
 SOCKS。资源规则会随账号和服务器策略变化，应在资源更新后重新生成。
 
 `-shadowrocket open` 或 `-shadowrocket connect` 会在本地 SOCKS 和 DNS relay 准备就绪后
-调用 macOS 的 Shadowrocket URL scheme。它不会替用户导入或激活规则配置；必须先完成上述
-一次合并。它只表示系统已接收启动/连接命令；Shadowrocket 没有可供本程序可靠读取的隧道
-已建立状态回调。
+通过 `open -g -j` 调用 macOS 的 Shadowrocket URL scheme，保持窗口隐藏且不切换前台应用。
+若启动前已存在 Shadowrocket `utun`，CLI 会先静默断开，待 aTrust 与本地监听器就绪后恢复，
+避免认证请求进入尚未启动的 SOCKS。它不会替用户导入或激活规则配置；必须先完成上述一次合并。
 
 AnyTLS 节点由 Shadowrocket 自身处理。若要导入一个节点，请把**唯一一行** `anytls://`
 URI 放入权限受限的文件，再使用 `-shadowrocket-add-node-file <文件>`；程序只校验 URI 并
