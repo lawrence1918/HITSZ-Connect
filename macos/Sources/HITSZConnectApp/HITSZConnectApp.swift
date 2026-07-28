@@ -28,6 +28,9 @@ struct HITSZConnectApp: App {
             StatusMenuView()
                 .environmentObject(state)
         }
-        .menuBarExtraStyle(.window)
+        // A native menu keeps the status item compact and gives connection
+        // actions proper macOS keyboard/menu behavior instead of presenting a
+        // second custom floating window.
+        .menuBarExtraStyle(.menu)
     }
 }

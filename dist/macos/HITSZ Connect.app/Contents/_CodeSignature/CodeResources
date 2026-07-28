@@ -4,18 +4,29 @@
 <dict>
 	<key>files</key>
 	<dict>
+		<key>Resources/AppIcon.icns</key>
+		<data>
+		cOE622ZVYKSY13gWcYonyXtoywg=
+		</data>
 		<key>Resources/hitsz-connect</key>
 		<data>
-		sY6Qeuz/o+qOxCy400NG3Ad1lWg=
+		KwxqdX1pYl+pqJ942aEhZ5dGmoQ=
 		</data>
 	</dict>
 	<key>files2</key>
 	<dict>
+		<key>Resources/AppIcon.icns</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			urnCEsHSF4VLbO9gFxcBz1CB1BRGzE3W++cStDbksq0=
+			</data>
+		</dict>
 		<key>Resources/hitsz-connect</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			LS90hUfoybSxjhh+IE93kPoAtT6Y3F4T6JkDDZjGKiM=
+			iXOA9rfbhzsXW8yjjQ1dJrgoLf9rmrn+qlRJ02d6830=
 			</data>
 		</dict>
 	</dict>

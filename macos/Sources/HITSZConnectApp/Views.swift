@@ -461,45 +461,55 @@ struct StatusMenuView: View {
     @EnvironmentObject private var state: AppState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("HITSZ Connect")
-                .font(.headline)
-            Label("aTrust：\(state.phase.title)", systemImage: state.phase.systemImage)
-            Text("↓ \(state.atrustTraffic.rxBytesPerSecond.transferRateDescription)   ↑ \(state.atrustTraffic.txBytesPerSecond.transferRateDescription)")
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.secondary)
+        Button("打开主界面", action: bringMainWindowToFront)
+
+        Divider()
+
+        Menu {
+            Label("状态：\(state.phase.title)", systemImage: state.phase.systemImage)
+                .disabled(true)
+            Text("↓ \(state.atrustTraffic.rxBytesPerSecond.transferRateDescription)  ↑ \(state.atrustTraffic.txBytesPerSecond.transferRateDescription)")
+                .disabled(true)
             Divider()
-            Label("Shadowrocket：\(state.shadowrocketSnapshot.state.title)", systemImage: state.shadowrocketSnapshot.state.systemImage)
-            Text("↓ \(state.shadowrocketSnapshot.rxBytesPerSecond.transferRateDescription)   ↑ \(state.shadowrocketSnapshot.txBytesPerSecond.transferRateDescription)")
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.secondary)
-            Divider()
-            HStack {
-                if state.phase == .connected || state.phase == .connecting || state.phase == .disconnecting {
-                    Button("关闭 aTrust") { state.stopConnection() }
-                        .disabled(state.phase == .disconnecting)
-                } else {
-                    Button("连接 aTrust") { state.startSelectedProfile() }
-                        .disabled(!state.canConnect)
-                }
-                Button("Shadowrocket") {
-                    if state.shadowrocketSnapshot.state == .connected {
-                        state.disconnectShadowrocket()
-                    } else {
-                        state.connectShadowrocket()
-                    }
-                }
-                .disabled(state.isBusy)
+            if state.phase == .connected || state.phase == .connecting || state.phase == .disconnecting {
+                Button("关闭 aTrust") { state.stopConnection() }
+                    .disabled(state.phase == .disconnecting)
+            } else {
+                Button("连接 aTrust") { state.startSelectedProfile() }
+                    .disabled(!state.canConnect)
             }
-            Divider()
-            Button("打开主窗口") { bringMainWindowToFront() }
-            Button("退出 HITSZ Connect") {
-                state.shutdown()
-                NSApp.terminate(nil)
-            }
+        } label: {
+            Label("aTrust 校园连接", systemImage: state.phase.systemImage)
         }
-        .padding(14)
-        .frame(width: 310)
+
+        Menu {
+            Label("状态：\(state.shadowrocketSnapshot.state.title)", systemImage: state.shadowrocketSnapshot.state.systemImage)
+                .disabled(true)
+            Text("↓ \(state.shadowrocketSnapshot.rxBytesPerSecond.transferRateDescription)   ↑ \(state.shadowrocketSnapshot.txBytesPerSecond.transferRateDescription)")
+                .disabled(true)
+            Divider()
+            Button(state.shadowrocketSnapshot.state == .connected ? "断开 Shadowrocket" : "连接 Shadowrocket") {
+                if state.shadowrocketSnapshot.state == .connected {
+                    state.disconnectShadowrocket()
+                } else {
+                    state.connectShadowrocket()
+                }
+            }
+            .disabled(state.isBusy)
+        } label: {
+            Label("Shadowrocket", systemImage: state.shadowrocketSnapshot.state.systemImage)
+        }
+
+        Divider()
+
+        Button("打开配置文件夹") { state.openProfilesFolder() }
+
+        Divider()
+
+        Button("退出 HITSZ Connect") {
+            state.shutdown()
+            NSApp.terminate(nil)
+        }
     }
 
     private func bringMainWindowToFront() {

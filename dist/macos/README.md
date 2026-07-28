@@ -1,7 +1,7 @@
 # HITSZ Connect macOS App 交付目录
 
-本目录包含 **HITSZ Connect 1.3.4** 的 Apple Silicon App，支持 macOS 13 及以上版本。App bundle
-内置 **HITSZ Connect CLI 1.3.4-hitsz.1**：SwiftUI 前端负责配置、MFA 交互和状态展示，实际的
+本目录包含 **HITSZ Connect 1.3.5** 的 Apple Silicon App，支持 macOS 13 及以上版本。App bundle
+内置 **HITSZ Connect CLI 1.3.5-hitsz.1**：SwiftUI 前端负责配置、MFA 交互和状态展示，实际的
 HITSZ 认证、aTrust 通道、本地代理及 DNS relay 由
 `HITSZ Connect.app/Contents/Resources/hitsz-connect` 提供。
 
