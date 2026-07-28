@@ -158,8 +158,11 @@ func newL3TunnelConn(ctx context.Context, dialTLS func(context.Context, string, 
 	}
 
 	c := &l3TunnelConn{
-		tlsConn:      tlsConn,
-		reader:       bufio.NewReader(tlsConn),
+		tlsConn: tlsConn,
+		// A single aTrust data frame can aggregate many IPv4 packets. Keep the
+		// whole maximum uint16-sized frame available so format detection never
+		// has to mistake a large length-prefixed frame for the token format.
+		reader:       bufio.NewReaderSize(tlsConn, maxDataFrameSize+4),
 		incoming:     make(chan []byte, 128),
 		closeCh:      make(chan struct{}),
 		conntrackMgr: newConntrackMgr(),
@@ -199,10 +202,18 @@ func (c *l3TunnelConn) readLoop() {
 		switch fr.cmd {
 		case cmdDataResp:
 			if fr.dataMode == "len" {
-				log.DebugPrintf("l3-tunnel recv data packet len=%d", len(fr.payload))
-				select {
-				case c.incoming <- fr.payload:
-				case <-c.closeCh:
+				packets, err := splitLengthDataPayload(fr.payload)
+				if err != nil {
+					log.DebugPrintf("l3-tunnel parse length data payload failed: %v", err)
+					continue
+				}
+				log.DebugPrintf("l3-tunnel recv length data packets=%d payloadLen=%d", len(packets), len(fr.payload))
+				for _, pkt := range packets {
+					select {
+					case c.incoming <- pkt:
+					case <-c.closeCh:
+						return
+					}
 				}
 				continue
 			}
@@ -562,7 +573,11 @@ func buildDataPayload(token string, packets [][]byte) []byte {
 	return payload
 }
 
-const maxDataPayload = 4096
+// aTrust's length-prefixed data frames use a uint16 length field and may carry
+// several IPv4 packets in one frame. Moonlight commonly produces frames well
+// over 4096 bytes, so a 4 KiB format-detection threshold silently discarded
+// most video packets.
+const maxDataFrameSize = 1<<16 - 1
 
 func parseDataPayload(payload []byte) ([][]byte, error) {
 	if len(payload) < 4 {
@@ -595,64 +610,107 @@ func parseDataPayload(payload []byte) ([][]byte, error) {
 	return packets, nil
 }
 
-func readDataRespPayload(r *bufio.Reader) ([]byte, string, error) {
-	peek, err := r.Peek(2)
-	if err != nil {
-		return nil, "", err
+// splitLengthDataPayload splits the length-prefixed aTrust response format.
+// A frame may contain one or more complete IPv4 packets concatenated together.
+func splitLengthDataPayload(payload []byte) ([][]byte, error) {
+	packets := make([][]byte, 0, 1)
+	for len(payload) != 0 {
+		if len(payload) < 20 || payload[0]>>4 != 4 {
+			return nil, fmt.Errorf("invalid IPv4 packet in length data payload")
+		}
+		headerLen := int(payload[0]&0x0f) * 4
+		packetLen := int(binary.BigEndian.Uint16(payload[2:4]))
+		if headerLen < 20 || packetLen < headerLen || packetLen > len(payload) {
+			return nil, fmt.Errorf("invalid IPv4 packet length %d", packetLen)
+		}
+
+		packet := make([]byte, packetLen)
+		copy(packet, payload[:packetLen])
+		packets = append(packets, packet)
+		payload = payload[packetLen:]
 	}
-	payloadLen := int(binary.BigEndian.Uint16(peek))
-	if payloadLen > 0 && payloadLen <= maxDataPayload {
-		if _, err := r.Discard(2); err != nil {
-			return nil, "", err
-		}
-		payload := make([]byte, payloadLen)
-		if payloadLen > 0 {
-			if _, err := io.ReadFull(r, payload); err != nil {
-				return nil, "", err
-			}
-		}
-		return payload, "len", nil
+	if len(packets) == 0 {
+		return nil, fmt.Errorf("empty length data payload")
+	}
+	return packets, nil
+}
+
+func readDataRespPayload(r *bufio.Reader) ([]byte, string, error) {
+	if payload, ok, err := tryReadTokenDataPayload(r); err != nil {
+		return nil, "", err
+	} else if ok {
+		return payload, "token", nil
 	}
 
-	tokenLen, err := r.ReadByte()
+	lengthBytes, err := r.Peek(2)
 	if err != nil {
 		return nil, "", err
 	}
-	payload := []byte{tokenLen}
-	if tokenLen > 0 {
-		token := make([]byte, int(tokenLen))
-		if _, err := io.ReadFull(r, token); err != nil {
-			return nil, "", err
-		}
-		payload = append(payload, token...)
-	}
-	reserved := make([]byte, 2)
-	if _, err := io.ReadFull(r, reserved); err != nil {
+	payloadLen := int(binary.BigEndian.Uint16(lengthBytes))
+	if _, err := r.Discard(2); err != nil {
 		return nil, "", err
 	}
-	payload = append(payload, reserved...)
-	count, err := r.ReadByte()
+	payload := make([]byte, payloadLen)
+	if _, err := io.ReadFull(r, payload); err != nil {
+		return nil, "", err
+	}
+	return payload, "len", nil
+}
+
+// tryReadTokenDataPayload validates the token-based response layout without
+// consuming input. A length-prefixed frame can be longer than 4096 bytes, so
+// the old size-based heuristic was not safe for distinguishing the formats.
+func tryReadTokenDataPayload(r *bufio.Reader) ([]byte, bool, error) {
+	first, err := r.Peek(1)
 	if err != nil {
-		return nil, "", err
+		return nil, false, err
 	}
-	payload = append(payload, count)
-	for i := 0; i < int(count); i++ {
-		lenBytes := make([]byte, 2)
-		if _, err := io.ReadFull(r, lenBytes); err != nil {
-			return nil, "", err
-		}
-		payload = append(payload, lenBytes...)
-		plen := int(binary.BigEndian.Uint16(lenBytes))
-		if plen == 0 {
-			continue
-		}
-		pkt := make([]byte, plen)
-		if _, err := io.ReadFull(r, pkt); err != nil {
-			return nil, "", err
-		}
-		payload = append(payload, pkt...)
+	tokenLen := int(first[0])
+	headerLen := 1 + tokenLen + 3 // token length, token, reserved, count
+	header, err := r.Peek(headerLen)
+	if err != nil {
+		return nil, false, err
 	}
-	return payload, "token", nil
+	reservedOffset := 1 + tokenLen
+	if header[reservedOffset] != 0 || header[reservedOffset+1] != 0 {
+		return nil, false, nil
+	}
+	count := int(header[reservedOffset+2])
+	if count == 0 {
+		return nil, false, nil
+	}
+
+	total := headerLen
+	for i := 0; i < count; i++ {
+		lengthBytes, err := r.Peek(total + 2)
+		if err != nil {
+			return nil, false, err
+		}
+		packetLen := int(binary.BigEndian.Uint16(lengthBytes[total : total+2]))
+		total += 2
+		if packetLen < 20 || total+packetLen > maxDataFrameSize {
+			return nil, false, nil
+		}
+		packet, err := r.Peek(total + packetLen)
+		if err != nil {
+			return nil, false, err
+		}
+		packet = packet[total : total+packetLen]
+		if packet[0]>>4 != 4 || int(binary.BigEndian.Uint16(packet[2:4])) != packetLen {
+			return nil, false, nil
+		}
+		total += packetLen
+	}
+
+	payload, err := r.Peek(total)
+	if err != nil {
+		return nil, false, err
+	}
+	result := append([]byte(nil), payload...)
+	if _, err := r.Discard(total); err != nil {
+		return nil, false, err
+	}
+	return result, true, nil
 }
 
 func parseDataMeta(payload []byte) (packetMeta, int, error) {

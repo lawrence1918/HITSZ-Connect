@@ -22,7 +22,7 @@ var appBridge bool
 var secureConfigID string
 var listSecureConfigs bool
 
-const hitszConnectVersion = "1.3.8-hitsz.1"
+const hitszConnectVersion = "1.3.9-hitsz.1"
 
 func getTOMLVal[T int | uint64 | string | bool](valPointer *T, defaultVal T) T {
 	if valPointer == nil {
