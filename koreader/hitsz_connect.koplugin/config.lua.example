@@ -1,0 +1,21 @@
+-- Copy this file to config.lua and edit it before uploading the plugin.
+return {
+    profile = "hitsz",
+    server_address = "trust.hitsz.edu.cn",
+    server_port = 443,
+    username = "REPLACE_WITH_STUDENT_ID_OR_PHONE",
+    password = "REPLACE_WITH_HITSZ_PASSWORD",
+
+    -- Exactly one of: "app", "sms", or "otp".
+    mfa_method = "app",
+    mfa_otp_secret = "",
+
+    socks_bind = "127.0.0.1:1080",
+    http_bind = "127.0.0.1:1081",
+    dns_relay_bind = "127.0.0.1:53535",
+    hitsz_dns_server = "10.248.98.30",
+
+    remember_sso = true,
+    remember_mfa = true,
+    update_best_nodes_interval = 300,
+}

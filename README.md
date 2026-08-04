@@ -52,8 +52,24 @@ HITSZ 是本 fork 的维护和实际验证重点。其他学校及上游通用�
 | --- | --- |
 | macOS 13+ / Apple Silicon (`darwin/arm64`) | App 与 CLI 正式交付并实测 |
 | Shadowrocket 协作 | 仅 macOS |
+| Kindle / KOReader（ARM、ARM64） | 提供可复制插件；设备兼容性需在目标 Kindle 上验证 |
 | 其它平台 | 可自行从源码构建，未作为本 fork 的 HITSZ 正式交付目标 |
 | 上游通用校园功能 | 保留源码，兼容性请参考上游项目 |
+
+## Kindle KOReader 插件
+
+可复制插件位于 [koreader/hitsz_connect.koplugin](koreader/hitsz_connect.koplugin)。它复用同一套
+aTrust/HITSZ 登录核心，保留 App、短信和 OTP 三种 MFA，并通过 KOReader“设置 → 网络”菜单完成连接、验证码输入、
+断开和日志查看。
+
+此版本明确采用“先配置、再上传”：在电脑上把 `config.lua.example` 复制为 `config.lua`，填写账号、
+密码、MFA 方式和可选 OTP 种子，然后将整个目录复制到
+`/mnt/us/koreader/plugins/hitsz_connect.koplugin/`。Kindle 端不提供账号、密码或 OTP 种子的编辑界面。
+完整步骤、安全边界与本地代理地址见
+[插件说明](koreader/hitsz_connect.koplugin/README.md)。
+
+KOReader 插件固定使用代理模式，不包含 TUN 或透明路由功能。连接成功后会提示将 HTTP 代理设置为
+`http://127.0.0.1:1081`；SOCKS5 代理地址为 `127.0.0.1:1080`。
 
 ## 推荐方式：macOS App
 
