@@ -98,5 +98,5 @@ func StartStack(fd int) {
 	}
 
 	vpnTUNStack.SetupTun(fd)
-	vpnTUNStack.Run()
+	_ = vpnTUNStack.Run()
 }

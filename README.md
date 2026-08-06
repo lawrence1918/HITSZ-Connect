@@ -51,6 +51,7 @@ HITSZ 是本 fork 的维护和实际验证重点。其他学校及上游通用�
 | 项目 | 发布状态 |
 | --- | --- |
 | macOS 13+ / Apple Silicon (`darwin/arm64`) | App 与 CLI 正式交付并实测 |
+| Android 8+ / Android TV / 机顶盒 | 提供原生 App 工程；目标设备兼容性需实机验证 |
 | Shadowrocket 协作 | 仅 macOS |
 | Kindle / KOReader（ARM、ARM64） | 提供可复制插件；设备兼容性需在目标 Kindle 上验证 |
 | 其它平台 | 可自行从源码构建，未作为本 fork 的 HITSZ 正式交付目标 |
@@ -70,6 +71,16 @@ aTrust/HITSZ 登录核心，保留 App、短信和 OTP 三种 MFA，并通过 KO
 
 KOReader 插件固定使用代理模式，不包含 TUN 或透明路由功能。连接成功后会提示将 HTTP 代理设置为
 `http://127.0.0.1:1081`；SOCKS5 代理地址为 `127.0.0.1:1080`。
+
+## Android TV / 机顶盒 App
+
+Android 工程位于 [android](android)，复用同一套 aTrust/HITSZ 登录核心，保留 App、短信和 OTP
+三种 MFA。界面支持遥控器焦点导航，可填写学号、统一认证密码、MFA 方式、OTP 种子以及 App/短信
+动态码；长期凭据与 aTrust client data 由 Android Keystore 加密后保存在应用私有目录。
+
+连接由 Android `VpnService` 提供系统级分流隧道，不依赖 root 或逐应用代理设置。认证阶段先使用
+系统网络，成功后按服务器下发的资源前缀建立 TUN 并接入 aTrust L3 隧道。构建、安装和机顶盒后台运行要求见
+[Android 说明](android/README.md)。
 
 ## 推荐方式：macOS App
 

@@ -1,6 +1,8 @@
 package tun
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -18,12 +20,13 @@ type Stack struct {
 	l3Conn   io.ReadWriteCloser
 }
 
-func (s *Stack) Run() {
+func (s *Stack) Run() error {
 	var connErr error
 	s.l3Conn, connErr = s.endpoint.client.NewL3Conn()
 	if connErr != nil {
-		return
+		return fmt.Errorf("create HITSZ L3 connection: %w", connErr)
 	}
+	defer s.l3Conn.Close()
 	// Read from VPN server and send to TUN stack
 	go func() {
 		for {
@@ -49,8 +52,7 @@ func (s *Stack) Run() {
 		buf := make([]byte, MTU)
 		n, err := s.endpoint.Read(buf)
 		if err != nil {
-			log.Printf("Error occurred while reading from TUN stack: %v", err)
-			return
+			return fmt.Errorf("read Android TUN: %w", err)
 		}
 
 		header, err := ipv4.ParseHeader(buf[:n])
@@ -65,8 +67,10 @@ func (s *Stack) Run() {
 
 		n, err = s.l3Conn.Write(buf[:n])
 		if err != nil {
-			log.Printf("Error occurred while writing to VPN server: %v", err)
-			return
+			if errors.Is(err, client.ErrResourceNotFound) {
+				continue
+			}
+			return fmt.Errorf("write HITSZ L3 tunnel: %w", err)
 		}
 		log.DebugPrintf("Send: wrote %d bytes", n)
 		log.DebugDumpHex(buf[:n])

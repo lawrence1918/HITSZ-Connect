@@ -51,3 +51,16 @@ Shadowrocket-hitsz-connect-*.conf
 # Encrypted HITSZ Connect profiles are machine-bound credentials. They live
 # outside the repository by default, under ~/Documents/hitsz-connect/.
 *.hcenc
+
+# Android build artifacts generated from the gomobile binding.
+android/app/libs/*.aar
+android/app/libs/*-sources.jar
+android/app/build/
+android/.gradle/
+android/build/
+android/local.properties
+android/local-release.keystore
+android/local-signing.properties
+
+# Keep only explicitly selected Android distribution artifacts.
+dist/android/*.aar
